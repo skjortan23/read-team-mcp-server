@@ -36,19 +36,19 @@ logger = logging.getLogger(__name__)
 @click.pass_context
 def cli(ctx: click.Context, config: Optional[Path], log_level: str, log_file: Optional[Path]) -> None:
     """Red Team MCP Server - An MCP server for red teaming operations."""
-    
+
     # Load configuration
     if config:
         mcp_config = RedTeamMCPConfig.from_file(config)
     else:
         mcp_config = RedTeamMCPConfig.from_env()
-    
+
     # Override log settings from CLI
     if log_level:
         mcp_config.security.log_level = log_level
     if log_file:
         mcp_config.security.log_file = str(log_file)
-    
+
     ctx.ensure_object(dict)
     ctx.obj["config"] = mcp_config
 
@@ -64,27 +64,20 @@ def cli(ctx: click.Context, config: Optional[Path], log_level: str, log_file: Op
 def serve(ctx: click.Context, transport: str) -> None:
     """Start the MCP server."""
     config: RedTeamMCPConfig = ctx.obj["config"]
-    
+
     async def run_server():
         server = RedTeamMCPServer(config)
-        
-        # Setup signal handlers for graceful shutdown
-        def signal_handler():
-            logger.info("Received shutdown signal")
-            asyncio.create_task(server.shutdown())
-        
-        if sys.platform != "win32":
-            loop = asyncio.get_event_loop()
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, signal_handler)
-        
+
         try:
             await server.run(transport)
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt")
+        except Exception as e:
+            logger.error(f"Server run error: {e}")
+            raise
         finally:
             await server.shutdown()
-    
+
     try:
         asyncio.run(run_server())
     except KeyboardInterrupt:
@@ -99,30 +92,30 @@ def serve(ctx: click.Context, transport: str) -> None:
 def validate(ctx: click.Context) -> None:
     """Validate the server configuration and dependencies."""
     config: RedTeamMCPConfig = ctx.obj["config"]
-    
+
     async def run_validation():
         from .scanner import Scanner
-        
+
         click.echo("Validating Red Team MCP Server configuration...")
-        
+
         # Validate configuration
         click.echo(f"✓ Configuration loaded successfully")
         click.echo(f"  - Server name: {config.server_name}")
         click.echo(f"  - Version: {config.version}")
         click.echo(f"  - Data directory: {config.data_dir}")
         click.echo(f"  - Log level: {config.security.log_level}")
-        
+
         # Validate masscan
         scanner = Scanner(config)
         click.echo(f"Validating masscan at: {config.scanner.masscan_path}")
-        
+
         if await scanner.validate_masscan():
             click.echo("✓ Masscan validation successful")
         else:
             click.echo("✗ Masscan validation failed")
             click.echo("  Please ensure masscan is installed and accessible")
             sys.exit(1)
-        
+
         # Validate permissions
         try:
             config.data_dir.mkdir(parents=True, exist_ok=True)
@@ -133,9 +126,9 @@ def validate(ctx: click.Context) -> None:
         except Exception as e:
             click.echo(f"✗ Data directory not writable: {e}")
             sys.exit(1)
-        
+
         click.echo("✓ All validations passed")
-    
+
     try:
         asyncio.run(run_validation())
     except Exception as e:
@@ -154,7 +147,7 @@ def validate(ctx: click.Context) -> None:
 def config_template(ctx: click.Context, output: Optional[Path]) -> None:
     """Generate a configuration template."""
     config: RedTeamMCPConfig = ctx.obj["config"]
-    
+
     if output:
         config.save_to_file(output)
         click.echo(f"Configuration template saved to: {output}")
@@ -209,32 +202,32 @@ def scan(
 ) -> None:
     """Perform a standalone port scan (for testing)."""
     config: RedTeamMCPConfig = ctx.obj["config"]
-    
+
     async def run_scan():
         from .scanner import Scanner
         from .models import ScanTarget
-        
+
         scanner = Scanner(config)
-        
+
         # Validate masscan
         if not await scanner.validate_masscan():
             click.echo("✗ Masscan validation failed")
             sys.exit(1)
-        
+
         # Create scan target
         scan_target = ScanTarget(ip_range=target, ports=ports)
-        
+
         # Start scan
         scan_kwargs = {"scan_type": scan_type}
         if rate:
             scan_kwargs["rate"] = rate
         if timeout:
             scan_kwargs["timeout"] = timeout
-        
+
         click.echo(f"Starting scan of {target} on ports {ports}")
         scan_id = await scanner.start_scan(scan_target, **scan_kwargs)
         click.echo(f"Scan ID: {scan_id}")
-        
+
         if wait:
             click.echo("Waiting for scan to complete...")
             while True:
@@ -242,7 +235,7 @@ def scan(
                 if result and result.status.value in ["completed", "failed", "cancelled"]:
                     break
                 await asyncio.sleep(1)
-            
+
             if result:
                 click.echo(f"Scan completed with status: {result.status.value}")
                 if result.status.value == "completed":
@@ -257,7 +250,7 @@ def scan(
                     click.echo(f"Error: {result.error_message}")
         else:
             click.echo("Scan started in background. Use 'red-team-mcp scan-status' to check progress.")
-    
+
     try:
         asyncio.run(run_scan())
     except Exception as e:
@@ -271,13 +264,13 @@ def scan(
 def scan_status(ctx: click.Context, scan_id: str) -> None:
     """Check the status of a scan."""
     config: RedTeamMCPConfig = ctx.obj["config"]
-    
+
     async def check_status():
         from .scanner import Scanner
-        
+
         scanner = Scanner(config)
         result = await scanner.get_scan_status(scan_id)
-        
+
         if result:
             click.echo(f"Scan ID: {scan_id}")
             click.echo(f"Status: {result.status.value}")
@@ -286,7 +279,7 @@ def scan_status(ctx: click.Context, scan_id: str) -> None:
             if result.end_time:
                 click.echo(f"End time: {result.end_time}")
                 click.echo(f"Duration: {result.duration:.2f} seconds")
-            
+
             if result.status.value == "completed":
                 click.echo(f"Hosts found: {result.total_hosts}")
                 click.echo(f"Open ports: {result.total_open_ports}")
@@ -294,7 +287,7 @@ def scan_status(ctx: click.Context, scan_id: str) -> None:
                 click.echo(f"Error: {result.error_message}")
         else:
             click.echo(f"Scan not found: {scan_id}")
-    
+
     try:
         asyncio.run(check_status())
     except Exception as e:

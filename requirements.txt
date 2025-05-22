@@ -4,12 +4,6 @@ mcp>=1.0.0
 # Data validation and parsing
 pydantic>=2.0.0
 
-# Async subprocess handling
-asyncio-subprocess>=0.1.0
-
-# Logging
-python-json-logger>=2.0.0
-
 # CLI interface
 click>=8.0.0
 

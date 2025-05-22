@@ -1,0 +1,24 @@
+{
+  "server_name": "red-team-mcp-test",
+  "version": "0.1.0",
+  "scanner": {
+    "masscan_path": "/opt/homebrew/bin/masscan",
+    "use_sudo": true,
+    "max_rate": 100,
+    "max_targets": 10,
+    "blocked_networks": [
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "169.254.0.0/16",
+      "224.0.0.0/4"
+    ],
+    "timeout": 60
+  },
+  "security": {
+    "enable_logging": true,
+    "log_level": "INFO",
+    "require_auth": false,
+    "rate_limit_requests": 100
+  }
+}

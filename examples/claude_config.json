@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "red-team-mcp": {
+      "command": "red-team-mcp",
+      "args": ["--config", "/path/to/your/config.json", "serve"],
+      "env": {
+        "REDTEAM_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
