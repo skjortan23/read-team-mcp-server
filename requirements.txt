@@ -14,3 +14,8 @@ black>=23.0.0
 isort>=5.0.0
 mypy>=1.0.0
 pre-commit>=3.0.0
+
+rich~=14.0.0
+agno~=1.5.3
+prompt_toolkit~=3.0.51
+fastmcp~=2.4.0

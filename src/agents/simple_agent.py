@@ -17,13 +17,29 @@ from agno.agent import Agent
 from agno.models.ollama import Ollama
 from agno.tools.mcp import MCPTools
 from agno.tools.reasoning import ReasoningTools
+from agno.tools
 from agno.storage.agent.sqlite import SqliteAgentStorage
 
+
+class HackInstructionExpander(Tool):
+    name = "hack"
+    description = "Expands a `hack` command into detailed penetration testing steps."
+
+    def invoke(self, input: str) -> str:
+        return f"""
+Begin a penetration test on target `{input}`.
+
+Step 1: Perform a port scan on `{input}` using standard port.
+Step 2: For each open port, perform a banner grab to identify the service.
+Step 3: Use the banner information to look up known vulnerabilities (e.g., CVEs).
+Step 4: Determine if any public exploits exist and describe how they could be used.
+"""
 
 class SimpleRedTeamAgent:
     """Simple Red Team Agent with MCP integration."""
 
-    def __init__(self, ollama_model: str = "qwen3", ollama_host: str = "http://localhost:11434",
+    def __init__(self, ollama_model: str = "qwen3:14b",
+                 ollama_host: str = "http://localhost:11434",
                  mcp_timeout: int = 300):
         self.console = Console()
         self.ollama_model = ollama_model
@@ -31,18 +47,17 @@ class SimpleRedTeamAgent:
         self.mcp_timeout = mcp_timeout
         self.mcp_tools = None
         self.agent = None
+        self.debug_mode = True
 
     def display_banner(self):
         """Display the agent banner."""
         timeout_mins = self.mcp_timeout // 60
         banner = f"""
 ╔══════════════════════════════════════════════════════════════╗
-║                    🛡️  Red Team Agno Agent                   ║
+║                    🛡️  Red Team Agno Agent                  ║
 ║                                                              ║
 ║  AI-Powered Red Team Operations with Local Ollama            ║
-║  Model: {self.ollama_model:<48} ║
-
-║  Timeout: {timeout_mins} minutes for long-running scans          ║
+║  Model: {self.ollama_model:<48} ║ host: {self.ollama_host}              ║
 ╚══════════════════════════════════════════════════════════════╝
         """
         self.console.print(banner, style="bold cyan")
@@ -53,42 +68,35 @@ class SimpleRedTeamAgent:
             self.console.print("🔌 Initializing MCP connection...", style="yellow")
 
             # Get the path to the FastMCP server script
-            server_script = Path(__file__).parent.parent / "examples" / "fastmcp_server.py"
+            server_script = Path(__file__).parent.parent / "red_team_mcp" / "fastmcp_server.py"
             mcp_command = f"python {server_script}"
 
             # Create MCP tools with configurable timeout for port scans (but don't use as context manager to avoid cleanup issues)
             self.mcp_tools = MCPTools(command=mcp_command, timeout_seconds=self.mcp_timeout)
             await self.mcp_tools.__aenter__()
 
-            self.console.print("🤖 Creating Agno agent...", style="yellow")
-
-            # Create Ollama model
             model = Ollama(
                 id=self.ollama_model,
-                host=self.ollama_host
-            )
+                host=self.ollama_host,
+                options={
+                    "num_ctx": 32768,
+                    'temperature': 0.2
+                })
 
             # Create the agent
             self.agent = Agent(
                 name="Red Team Agent",
                 model=model,
                 tools=[
-                    ReasoningTools(add_instructions=True),
+                    #ReasoningTools(add_instructions=True),
                     self.mcp_tools
                 ],
                 instructions=dedent("""\
-                    You are a Red Team Security Agent with access to network scanning and reconnaissance tools.
-
-                    Your capabilities include:
-                    - Port scanning using masscan
-                    - Network reconnaissance
-        
+                    /no_think
+                    You are a export Red Team Security expert with access to network scanning and reconnaissance tools.
 
                     Guidelines:
-                    - Always think through your approach before taking action
-                    - Use reasoning to analyze scan results and provide insights
-                    - Only scan networks you have permission to test
-                    - Provide clear, actionable security recommendations
+                    - Use the tools default parameters unless you have a specific reason to change them
                     - Use tables and structured output for scan results
                     - Be thorough in your analysis but concise in your responses
 
@@ -96,7 +104,7 @@ class SimpleRedTeamAgent:
                 """),
                 storage=SqliteAgentStorage(
                     table_name="red_team_agent",
-                    db_file="tmp/red_team_agent.db",
+                    db_file="../../agent/tmp/red_team_agent.db",
                     auto_upgrade_schema=True,
                 ),
                 add_history_to_messages=True,
@@ -120,15 +128,6 @@ class SimpleRedTeamAgent:
 
         if not await self.initialize():
             return False
-
-        self.console.print("💡 You can now ask the agent to perform red team operations", style="blue")
-        self.console.print("   Examples:", style="blue")
-        self.console.print("   • 'Scan 127.0.0.1 for common ports'", style="green")
-        self.console.print("   • 'Check the status of my last scan'", style="green")
-        self.console.print("   • 'List all completed scans'", style="green")
-        self.console.print("   • 'Validate that masscan is working'", style="green")
-        self.console.print()
-
         # Interactive loop
         try:
             while True:
@@ -146,11 +145,12 @@ class SimpleRedTeamAgent:
                         self.show_help()
                         continue
 
-                    # Send request to agent
+                    # Send request to agent with streaming
                     self.console.print(f"\n🤖 Processing: {user_input}", style="yellow")
-                    response = await self.agent.arun(user_input)
-                    self.console.print(f"\n📝 Response:\n{response.content}", style="white")
-                    self.console.print()
+
+                    # Use aprint_response for streaming output
+                    await self.agent.aprint_response(user_input, stream=True)
+                    self.console.print()  # Add spacing after response
 
                 except KeyboardInterrupt:
                     self.console.print("\n👋 Goodbye!", style="cyan")
@@ -169,20 +169,11 @@ class SimpleRedTeamAgent:
     def show_help(self):
         """Show help information."""
         help_text = f"""
-🛡️  Red Team Agno Agent Help
+🛡️  Red Team Agent Help
 
 This is an AI agent powered by local Ollama ({self.ollama_model}) that can perform
 red team operations using natural language. The agent has access to network scanning
 tools through MCP (Model Context Protocol).
-
-Example Commands:
-• "Scan 192.168.1.1 for common ports"
-• "Perform a TCP SYN scan on 10.0.0.0/24 ports 80,443,22"
-• "Check the status of scan ID abc123"
-• "List all my previous scans"
-• "Get results from all completed scans"
-• "Validate that masscan is properly configured"
-• "Cancel the running scan with ID xyz789"
 
 Special Commands:
 • help - Show this help message

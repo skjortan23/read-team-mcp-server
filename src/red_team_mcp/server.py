@@ -143,6 +143,74 @@ class RedTeamMCPServer:
                         "properties": {},
                         "additionalProperties": False
                     }
+                ),
+                Tool(
+                    name="ssh_execute",
+                    description="Execute SSH command on remote host with username/password authentication",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "host": {
+                                "type": "string",
+                                "description": "Hostname or IP address to connect to"
+                            },
+                            "username": {
+                                "type": "string",
+                                "description": "Username for SSH authentication"
+                            },
+                            "password": {
+                                "type": "string",
+                                "description": "Password for SSH authentication"
+                            },
+                            "command": {
+                                "type": "string",
+                                "description": "Command to execute on the remote host"
+                            },
+                            "port": {
+                                "type": "integer",
+                                "description": "SSH port number",
+                                "default": 22
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Connection timeout in seconds",
+                                "default": 10
+                            }
+                        },
+                        "required": ["host", "username", "password", "command"]
+                    }
+                ),
+                Tool(
+                    name="ssh_brute_force",
+                    description="Brute force SSH credentials using username and password lists",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "host": {
+                                "type": "string",
+                                "description": "Hostname or IP address to brute force"
+                            },
+                            "usernames": {
+                                "type": "string",
+                                "description": "Comma-separated list of usernames to try"
+                            },
+                            "passwords": {
+                                "type": "string",
+                                "description": "Comma-separated list of passwords to try"
+                            },
+                            "port": {
+                                "type": "integer",
+                                "description": "SSH port number",
+                                "default": 22
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Connection timeout per attempt in seconds",
+                                "default": 5
+                            }
+                        },
+                        "required": ["host", "usernames", "passwords"]
+                    }
                 )
             ]
 
