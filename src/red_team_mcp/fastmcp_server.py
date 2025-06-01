@@ -6,13 +6,15 @@ This creates a minimal but functional red team MCP server using FastMCP.
 """
 
 import json
-import subprocess
 import socket
-from typing import Annotated
+import asyncio
+from typing import Annotated, AsyncGenerator, Dict
 from pydantic import BaseModel, Field
-
 from fastmcp import FastMCP
-from red_team_mcp import database, nuclei_scanner, masscan_scanner, ssh_scanner
+from red_team_mcp import database, masscan_scanner, ssh_scanner, metasploit_scanner, domain_discovery
+from red_team_mcp.bannerGrabber import getBanner
+from red_team_mcp.nuclei_scanner import enumerate_vulnerabilities
+
 
 # Pydantic models for better schema control
 class PortScanParams(BaseModel):
@@ -31,7 +33,7 @@ class PortScanParams(BaseModel):
         examples=["tcp_syn", "tcp_connect", "udp"]
     )
     rate: int = Field(
-        default=100,
+        default=500,
         description="Packets per second rate (100-10000, higher = faster but more aggressive)",
         ge=100,
         le=10000,
@@ -52,6 +54,8 @@ class VulerabilityScanParameters(BaseModel):
     )
 
 
+
+
 # Create FastMCP server
 app = FastMCP("Red Team MCP")
 
@@ -61,18 +65,34 @@ database.init_database()
 # Register SSH tools
 ssh_scanner.register_tools(app)
 
+# Register Metasploit tools
+metasploit_scanner.register_tools(app)
+
+# Register Domain Discovery tools
+domain_discovery.register_tools(app)
+
 @app.tool()
-def resolve_hostname_to_ip(
+async def resolve_hostname_to_ip(
     hostname: Annotated[str, "Hostname or domain name to resolve (e.g., 'google.com', 'example.org')"]
 ) -> str:
-    """Resolve a hostname to an IP address."""
+    """Resolve a hostname to an IP address with timeout."""
     try:
-        ip_address = socket.gethostbyname(hostname)
+        # Run the blocking socket operation in a thread pool with timeout
+        import asyncio
+        ip_address = await asyncio.wait_for(
+            asyncio.to_thread(socket.gethostbyname, hostname),
+            timeout=10.0  # 10 second DNS timeout
+        )
         return json.dumps({
             "success": True,
             "hostname": hostname,
             "ip_address": ip_address,
             "message": "Hostname resolved successfully"
+        })
+    except asyncio.TimeoutError:
+        return json.dumps({
+            "success": False,
+            "message": f"DNS resolution timed out after 10 seconds for hostname: {hostname}"
         })
     except Exception as e:
         return json.dumps({
@@ -85,7 +105,7 @@ def resolve_hostname_to_ip(
 
 
 @app.tool()
-def port_scan(params: PortScanParams) -> str:
+async def port_scan(params: PortScanParams) -> str:
     """
     NETWORK PORT SCANNING: Discover open ports on hosts using masscan.
 
@@ -105,29 +125,28 @@ def port_scan(params: PortScanParams) -> str:
     IMPORTANT: This tool only finds OPEN PORTS, not vulnerabilities.
     For vulnerability scanning, use the vulnerability_scan tool instead.
     """
-    try:
-        # Call the port_scan function from masscan_scanner module
-        result = masscan_scanner.port_scan(
-            params.target, 
-            params.ports, 
-            params.scan_type, 
-            params.rate
-        )
 
-        # Convert the result to JSON string
-        return json.dumps(result)
-
-    except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        })
+    from masscan import mass_port_scan
+    res = await mass_port_scan(target=params.target, ports=params.ports)
+    return res
 
 
-@app.tool()
-def enumerate_vulnerabilities(params: VulerabilityScanParameters) -> str:
+@app.tool(
+    annotations={
+        "title": "vulnerability scanner using nuclei scanner",
+        "description": (
+            "ENUMERATE VULNERABILITIES: Find security issues and CVEs using nuclei scanner with streaming output. "
+            "This tool ENUMERATES VULNERABILITIES, MISCONFIGURATIONS, and SECURITY ISSUES. "
+            "It does NOT find open ports - use port_scan for port discovery. "
+            "Provides real-time progress updates during scanning."
+        ),
+        "readOnlyHint": False,
+        "openWorldHint": True
+    }
+)
+async def enumerate_vulnerabilities(host: str, port: int) -> AsyncGenerator[Dict, None]:
     """
-    ENUMERATE VULNERABILITIES: Find security issues and CVEs using nuclei scanner.
+    ENUMERATE VULNERABILITIES: Find security issues and CVEs using nuclei scanner with streaming output.
 
     This tool ENUMERATES VULNERABILITIES, MISCONFIGURATIONS, and SECURITY ISSUES.
     It does NOT find open ports - use port_scan for port discovery.
@@ -147,31 +166,18 @@ def enumerate_vulnerabilities(params: VulerabilityScanParameters) -> str:
     IMPORTANT: This tool ENUMERATES VULNERABILITIES, not open ports.
     For port discovery, use the port_scan tool instead.
     """
-    try:
-        # Call the enumerate_vulnerabilities function from nuclei_scanner module
-        result = nuclei_scanner.enumerate_vulnerabilities(
-            params.host,
-            params.port
-        )
-
-        # Convert the result to JSON string
-        return json.dumps(result)
-
-    except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        })
+    res = enumerate_vulnerabilities(host, port)
+    return res
 
 
 @app.tool()
-def get_banner(
+async def get_banner(
     ip: Annotated[str, "IP address to connect to (e.g., '192.168.1.1')"],
     port: Annotated[int, "Port number to connect to (e.g., 80, 443, 22)"],
     timeout: Annotated[int, "Connection timeout in seconds (1-30)"] = 5
 ) -> str:
     """
-    Use netcat to connect to a host:port and retrieve banner information.
+    Use host and port and retrieve banner information.
 
     Args:
         ip: IP address to connect to
@@ -181,34 +187,18 @@ def get_banner(
     Returns:
         JSON string with service, version, and banner information
     """
-    try:
-        banner_info = masscan_scanner.getBanner(ip, port, timeout)
-        return json.dumps({
-            "success": True,
-            "ip": ip,
-            "port": port,
-            "service": banner_info.get("service", "unknown"),
-            "version": banner_info.get("version", ""),
-            "banner": banner_info.get("banner", ""),
-            "message": f"Banner retrieved for {ip}:{port}"
-        })
-    except Exception as e:
-        return json.dumps({
-            "success": False,
-            "ip": ip,
-            "port": port,
-            "error": str(e),
-            "message": f"Failed to retrieve banner for {ip}:{port}"
-        })
+    return getBanner(ip, port, timeout)
 
 @app.tool()
-def get_finished_scan_results(
+async def get_finished_scan_results(
     limit: Annotated[int, "Maximum number of scan results to return (1-100)"] = 10,
     scan_id: Annotated[str, "Optional: specific scan ID to retrieve (UUID format)"] = None
 ) -> str:
     """Get all finished scan results from database."""
     try:
-        result = database.get_finished_scan_results(limit, scan_id)
+        # Run the blocking database operation in a thread pool
+        import asyncio
+        result = await asyncio.to_thread(database.get_finished_scan_results, limit, scan_id)
         return json.dumps(result)
     except Exception as e:
         return json.dumps({
@@ -219,7 +209,7 @@ def get_finished_scan_results(
 
 
 @app.tool()
-def search_scan_results(
+async def search_scan_results(
     hostname: Annotated[str, "Hostname to search for (optional)"] = None,
     ip_address: Annotated[str, "IP address to search for (optional)"] = None,
     port: Annotated[int, "Port number to search for (optional)"] = None,
@@ -240,7 +230,9 @@ def search_scan_results(
     - Find all SSH services: port=22 or service='ssh'
     """
     try:
-        result = database.search_scan_results(hostname, ip_address, port, service, limit)
+        # Run the blocking database operation in a thread pool
+        import asyncio
+        result = await asyncio.to_thread(database.search_scan_results, hostname, ip_address, port, service, limit)
         return json.dumps(result)
     except Exception as e:
         return json.dumps({
@@ -251,7 +243,7 @@ def search_scan_results(
 
 
 @app.tool()
-def search_vulnerability_results(
+async def search_vulnerability_results(
     hostname: Annotated[str, "Hostname to search for (optional)"] = None,
     ip_address: Annotated[str, "IP address to search for (optional)"] = None,
     port: Annotated[int, "Port number to search for (optional)"] = None,
@@ -273,7 +265,9 @@ def search_vulnerability_results(
     - Find specific CVE: template_id='CVE-2021-44228'
     """
     try:
-        result = database.search_vulnerability_results(hostname, ip_address, port, severity, template_id, limit)
+        # Run the blocking database operation in a thread pool
+        import asyncio
+        result = await asyncio.to_thread(database.search_vulnerability_results, hostname, ip_address, port, severity, template_id, limit)
         return json.dumps(result)
     except Exception as e:
         return json.dumps({
@@ -284,16 +278,166 @@ def search_vulnerability_results(
 
 
 @app.tool()
+async def search_findings(
+    hostname: Annotated[str, "Hostname to search for (optional)"] = None,
+    ip_address: Annotated[str, "IP address to search for (optional)"] = None,
+    port: Annotated[int, "Port number to search for (optional)"] = None,
+    service: Annotated[str, "Service name to search for (optional)"] = None,
+    agent_type: Annotated[str, "Agent type to filter by (port-scan, vuln-scan, ssh-agent, metasploit-agent)"] = None,
+    severity: Annotated[str, "Severity level for vulnerabilities (info,low,medium,high,critical)"] = None,
+    template_id: Annotated[str, "Template ID for vulnerabilities (optional)"] = None,
+    limit: Annotated[int, "Maximum number of results to return (1-100)"] = 20
+) -> str:
+    """
+    Search all findings (port scans, vulnerabilities, SSH results, etc.) by various criteria.
+
+    This unified search allows finding:
+    - All findings on a specific host: hostname='example.com'
+    - All port scan results: agent_type='port-scan'
+    - All vulnerabilities: agent_type='vuln-scan'
+    - All SSH findings: agent_type='ssh-agent'
+    - All critical vulnerabilities: agent_type='vuln-scan', severity='critical'
+    - All findings on a specific port: port=22
+    - All SSH services: service='ssh'
+
+    Examples:
+    - Find all findings on host: hostname='192.168.1.100'
+    - Find all vulnerabilities: agent_type='vuln-scan'
+    - Find critical issues: agent_type='vuln-scan', severity='critical'
+    - Find SSH findings: agent_type='ssh-agent'
+    - Find all port 22 findings: port=22
+    """
+    try:
+        # Run the blocking database operation in a thread pool
+        import asyncio
+        result = await asyncio.to_thread(database.search_findings, hostname, ip_address, port, service, agent_type, severity, template_id, limit)
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "message": "Failed to search findings"
+        })
+
+
+@app.tool()
+async def save_hacking_results(
+    scan_id: Annotated[str, "Unique scan ID for this hacking session"],
+    target_host: Annotated[str, "Target host that was attacked"],
+    shells_obtained: Annotated[str, "JSON string of shells obtained (e.g., '[{\"type\":\"ssh\",\"host\":\"1.1.1.1\",\"port\":22,\"username\":\"root\",\"password\":\"admin\"}]')"] = "[]",
+    credentials_found: Annotated[str, "JSON string of credentials found (e.g., '[{\"username\":\"admin\",\"password\":\"password123\",\"service\":\"ssh\"}]')"] = "[]",
+    vulnerabilities_found: Annotated[str, "JSON string of vulnerabilities found (e.g., '[{\"cve\":\"CVE-2021-44228\",\"port\":8080,\"severity\":\"critical\"}]')"] = "[]",
+    methodology_steps: Annotated[str, "JSON string of methodology steps completed"] = "[]"
+) -> str:
+    """
+    Save hacking agent results to the database.
+
+    This tool allows the hacking agent to save its penetration testing results
+    to the central database for persistence and later analysis.
+
+    Args:
+        scan_id: Unique identifier for this hacking session
+        target_host: The target that was attacked
+        shells_obtained: JSON array of shell access gained
+        credentials_found: JSON array of credentials discovered
+        vulnerabilities_found: JSON array of vulnerabilities identified
+        methodology_steps: JSON array of steps completed
+
+    Returns:
+        JSON response indicating success/failure
+    """
+    try:
+        import json
+        from datetime import datetime
+
+        # Parse JSON strings
+        shells = json.loads(shells_obtained) if shells_obtained else []
+        creds = json.loads(credentials_found) if credentials_found else []
+        vulns = json.loads(vulnerabilities_found) if vulnerabilities_found else []
+        steps = json.loads(methodology_steps) if methodology_steps else []
+
+        # Save shells as findings
+        for shell in shells:
+            database.save_scan_result_entry(
+                scan_id=scan_id,
+                hostname=target_host,
+                ip_address=target_host,
+                port=shell.get("port", 0),
+                protocol="tcp",
+                state="open",
+                service=shell.get("type", "shell"),
+                version=f"SHELL-ACCESS:{shell.get('username', 'unknown')}:{shell.get('password', 'unknown')}",
+                banner=f"Shell obtained via {shell.get('method', 'unknown')}",
+                agent="hacking-agent"
+            )
+
+        # Save credentials as findings
+        for cred in creds:
+            database.save_scan_result_entry(
+                scan_id=scan_id,
+                hostname=target_host,
+                ip_address=target_host,
+                port=cred.get("port", 0),
+                protocol="tcp",
+                state="open",
+                service=cred.get("service", "credential"),
+                version=f"CREDENTIAL-FOUND:{cred.get('username', 'unknown')}:{cred.get('password', 'unknown')}",
+                banner=f"Credential discovered via {cred.get('method', 'unknown')}",
+                agent="hacking-agent"
+            )
+
+        # Save vulnerabilities as findings
+        for vuln in vulns:
+            database.save_scan_result_entry(
+                scan_id=scan_id,
+                hostname=target_host,
+                ip_address=target_host,
+                port=vuln.get("port", 0),
+                protocol="tcp",
+                state="open",
+                service=vuln.get("service", "vulnerability"),
+                version=f"VULNERABILITY:{vuln.get('cve', 'unknown')}:{vuln.get('severity', 'unknown')}",
+                banner=f"Vulnerability: {vuln.get('description', 'No description')}",
+                agent="hacking-agent"
+            )
+
+        # Run the blocking database operation in a thread pool
+        import asyncio
+        await asyncio.to_thread(lambda: None)  # Ensure we're in async context
+
+        total_findings = len(shells) + len(creds) + len(vulns)
+
+        return json.dumps({
+            "success": True,
+            "scan_id": scan_id,
+            "target_host": target_host,
+            "shells_saved": len(shells),
+            "credentials_saved": len(creds),
+            "vulnerabilities_saved": len(vulns),
+            "total_findings": total_findings,
+            "methodology_steps": len(steps),
+            "message": f"Saved {total_findings} hacking findings to database"
+        })
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "message": "Failed to save hacking results"
+        })
+
+
+@app.tool()
 def list_capabilities() -> str:
     """List all available red team capabilities."""
     capabilities = {
         "scanning": {
             "port_scan": "Scan networks and hosts for open ports (includes automatic banner grabbing)",
-            "enumerate_vulnerabilities": "Enumerate vulnerabilities and security issues using nuclei scanner",
-
+            "enumerate_vulnerabilities": "Enumerate vulnerabilities and security issues using nuclei scanner with real-time streaming output",
             "get_finished_scan_results": "Retrieve all completed scan results from database",
-            "search_scan_results": "Search scan results by hostname, IP, port, or service",
-            "search_vulnerability_results": "Search vulnerability scan results by various criteria",
+            "search_findings": "Unified search across all findings (port scans, vulnerabilities, SSH results) by various criteria",
+            "search_scan_results": "Search port scan results by hostname, IP, port, or service (legacy)",
+            "search_vulnerability_results": "Search vulnerability scan results by various criteria (legacy)",
             "resolve_hostname_to_ip": "Resolve a hostname to an IP address",
             "get_banner": "Use netcat to retrieve service banner from a specific host:port"
         },
@@ -303,8 +447,19 @@ def list_capabilities() -> str:
             "ssh_brute_force": "Brute force SSH credentials using username and password lists"
         },
 
+        "metasploit": {
+            "search_exploits_fast": "Search cached exploits database for fast results with CVE, platform, rank, and author filtering",
+            "list_exploits": "List available Metasploit exploits with optional filtering by platform and search terms",
+            "execute_exploit": "Execute a Metasploit exploit against a target host with payload and option configuration"
+        },
+
+        "domain_discovery": {
+            "domain_discovery": "Enumerate subdomains from a top-level domain using subfinder and resolve them to IP addresses"
+        },
+
         "analysis": {
-            "list_capabilities": "Show all available tools and capabilities"
+            "list_capabilities": "Show all available tools and capabilities",
+            "save_hacking_results": "Save hacking agent results (shells, credentials, vulnerabilities) to database"
         }
     }
 
@@ -313,7 +468,6 @@ def list_capabilities() -> str:
         "capabilities": capabilities,
         "message": "Red Team MCP capabilities listed"
     })
-
 
 if __name__ == "__main__":
     # Run the FastMCP server

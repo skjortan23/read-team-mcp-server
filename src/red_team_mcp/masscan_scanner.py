@@ -6,138 +6,18 @@ This module contains functions for port scanning using masscan.
 
 import json
 import subprocess
-import socket
+
 from datetime import datetime
 from pathlib import Path
 import tempfile
 import uuid
-from typing import Dict, List, Tuple
-
 from red_team_mcp import database
+from red_team_mcp.bannerGrabber import getBanner
 
-def getBanner(ip: str, port: int, timeout: int = 5) -> Dict[str, str]:
-    """
-    Use socket connection to retrieve banner information from a host:port.
 
-    Args:
-        ip: IP address to connect to
-        port: Port number to connect to
-        timeout: Connection timeout in seconds
-
-    Returns:
-        Dictionary with service, version, and banner information
-    """
-    try:
-        # Create socket connection
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-
-        # Connect to the target
-        sock.connect((ip, port))
-
-        # For HTTP services, send a request
-        if port in [80, 8080, 8000]:
-            request = b"GET / HTTP/1.0\r\n\r\n"
-            sock.send(request)
-
-        # Receive banner/response
-        banner_text = ""
-        try:
-            data = sock.recv(1024)
-            banner_text = data.decode('utf-8', errors='ignore').strip()
-        except:
-            pass
-
-        sock.close()
-
-        if banner_text:
-            # Try to identify service and version from banner
-            service_name = "unknown"
-            version = ""
-            banner_lower = banner_text.lower()
-
-            # Web servers
-            if any(x in banner_lower for x in ['apache', 'httpd']):
-                service_name = "http"
-                version = "Apache"
-            elif 'nginx' in banner_lower:
-                service_name = "http"
-                version = "nginx"
-            elif 'microsoft-iis' in banner_lower or 'iis' in banner_lower:
-                service_name = "http"
-                version = "Microsoft-IIS"
-            elif 'lighttpd' in banner_lower:
-                service_name = "http"
-                version = "lighttpd"
-            elif 'gunicorn' in banner_lower:
-                service_name = "http"
-                version = "gunicorn"
-            elif 'server:' in banner_lower:
-                service_name = "http"
-                version = "HTTP"
-
-            # SSH
-            elif 'openssh' in banner_lower:
-                service_name = "ssh"
-                version = "OpenSSH"
-            elif 'ssh' in banner_lower:
-                service_name = "ssh"
-                version = "SSH"
-
-            # FTP
-            elif 'ftp' in banner_lower:
-                service_name = "ftp"
-                if 'vsftpd' in banner_lower:
-                    version = "vsftpd"
-                elif 'proftpd' in banner_lower:
-                    version = "ProFTPD"
-                else:
-                    version = "FTP"
-
-            # Mail services
-            elif 'smtp' in banner_lower:
-                service_name = "smtp"
-                if 'postfix' in banner_lower:
-                    version = "Postfix"
-                elif 'sendmail' in banner_lower:
-                    version = "Sendmail"
-                else:
-                    version = "SMTP"
-
-            # Database services
-            elif 'mysql' in banner_lower:
-                service_name = "mysql"
-                version = "MySQL"
-            elif 'postgresql' in banner_lower:
-                service_name = "postgresql"
-                version = "PostgreSQL"
-
-            # Other common services
-            elif 'telnet' in banner_lower:
-                service_name = "telnet"
-                version = "Telnet"
-
-            return {
-                "service": service_name,
-                "version": version,
-                "banner": banner_text
-            }
-        else:
-            return {
-                "service": "unknown",
-                "version": "",
-                "banner": ""
-            }
-
-    except Exception as e:
-        return {
-            "service": "unknown",
-            "version": "",
-            "banner": f"Error: {str(e)}"
-        }
-
-def execute_masscan(target: str, ports: str, rate: int = 100, timeout: int = 60) -> tuple[bool, str, Path]:
-    """Execute masscan and return success status, stderr output, and output file path."""
+def execute_masscan_streaming(target: str, ports: str, rate: int = 100, timeout: int = 300,
+                             progress_callback=None) -> tuple[bool, str, Path]:
+    """Execute masscan with streaming output processing and return success status, stderr output, and output file path."""
     try:
         # Create temporary output file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -153,20 +33,129 @@ def execute_masscan(target: str, ports: str, rate: int = 100, timeout: int = 60)
             "-oJ", str(output_file)
         ]
 
-        # Execute scan synchronously
-        result = subprocess.run(
+        # Execute scan with streaming output
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout
+            bufsize=1,  # Line buffered
+            universal_newlines=True
         )
 
-        return True, result.stderr, output_file
+        stderr_output = ""
+        hosts_found = 0
+        ports_found = 0
+
+        try:
+            # Monitor the output file for new results
+            import time
+            start_time = time.time()
+            last_size = 0
+
+            while process.poll() is None:
+                # Check for timeout
+                if time.time() - start_time > timeout:
+                    process.terminate()
+                    process.wait(timeout=5)
+                    return False, f"Scan timed out after {timeout} seconds", output_file
+
+                # Check if output file has grown
+                if output_file.exists():
+                    current_size = output_file.stat().st_size
+                    if current_size > last_size:
+                        # Process new content
+                        new_results = _process_new_output(output_file, last_size)
+                        if new_results:
+                            for result in new_results:
+                                if 'ip' in result and 'ports' in result:
+                                    hosts_found += 1
+                                    ports_found += len(result.get('ports', []))
+
+                                    # Call progress callback if provided
+                                    if progress_callback:
+                                        progress_callback({
+                                            'type': 'host_found',
+                                            'ip': result.get('ip'),
+                                            'ports': result.get('ports', []),
+                                            'total_hosts': hosts_found,
+                                            'total_ports': ports_found
+                                        })
+
+                        last_size = current_size
+
+                # Small delay to avoid busy waiting
+                time.sleep(0.1)
+
+            # Wait for process to complete and get stderr
+            _, stderr = process.communicate()
+            stderr_output = stderr.strip()
+
+            # Process any remaining output
+            if output_file.exists():
+                final_results = _process_new_output(output_file, last_size)
+                if final_results and progress_callback:
+                    for result in final_results:
+                        if 'ip' in result and 'ports' in result:
+                            hosts_found += 1
+                            ports_found += len(result.get('ports', []))
+                            progress_callback({
+                                'type': 'host_found',
+                                'ip': result.get('ip'),
+                                'ports': result.get('ports', []),
+                                'total_hosts': hosts_found,
+                                'total_ports': ports_found
+                            })
+
+            # Final progress update
+            if progress_callback:
+                progress_callback({
+                    'type': 'scan_complete',
+                    'total_hosts': hosts_found,
+                    'total_ports': ports_found,
+                    'return_code': process.returncode
+                })
+
+            return process.returncode == 0, stderr_output, output_file
+
+        except Exception as e:
+            process.terminate()
+            process.wait(timeout=5)
+            raise e
 
     except subprocess.TimeoutExpired:
         return False, f"Scan timed out after {timeout} seconds", output_file
     except Exception as e:
         return False, str(e), output_file
+
+
+def _process_new_output(output_file: Path, last_position: int) -> list[dict]:
+    """Process new content in the output file since last_position."""
+    results = []
+
+    try:
+        with open(output_file, 'r') as f:
+            f.seek(last_position)
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    try:
+                        data = json.loads(line)
+                        results.append(data)
+                    except json.JSONDecodeError:
+                        continue
+    except Exception:
+        pass
+
+    return results
+
+
+def execute_masscan(target: str, ports: str, rate: int = 100, timeout: int = 300) -> tuple[bool, str, Path]:
+    """Execute masscan and return success status, stderr output, and output file path.
+
+    This is the legacy synchronous version for backward compatibility.
+    """
+    return execute_masscan_streaming(target, ports, rate, timeout, progress_callback=None)
 
 def parse_masscan_results(output_file: Path) -> list[dict]:
     """Parse masscan JSON output and return structured host/port data with banner information."""
@@ -255,7 +244,6 @@ def parse_masscan_results(output_file: Path) -> list[dict]:
 
                                             if not port_exists:
                                                 banner_info = banner_data.get(port_key, {})
-
                                                 # If no banner info from masscan, try to get it with netcat
                                                 if not banner_info or banner_info.get("service") == "unknown":
                                                     try:
@@ -287,18 +275,21 @@ def parse_masscan_results(output_file: Path) -> list[dict]:
 
     return hosts
 
-def port_scan(target: str, ports: str, scan_type: str = "tcp_syn", rate: int = 100) -> dict:
+def port_scan_streaming(target: str, ports: str, scan_type: str = "tcp_syn", rate: int = 100,
+                       progress_callback=None) -> dict:
     """
-    NETWORK PORT SCANNING: Discover open ports on hosts using masscan.
+    NETWORK PORT SCANNING: Discover open ports on hosts using masscan with real-time progress.
 
-    This function performs PORT DISCOVERY to find open TCP/UDP ports on target hosts.
-    
+    This function performs PORT DISCOVERY to find open TCP/UDP ports on target hosts
+    and provides real-time progress updates via callback.
+
     Args:
         target: IP address or CIDR range to scan
         ports: Comma-separated ports or ranges
         scan_type: Type of scan (tcp_syn, tcp_connect, udp, etc.)
         rate: Packets per second rate
-        
+        progress_callback: Function to call with progress updates
+
     Returns:
         Dictionary with scan results
     """
@@ -310,21 +301,104 @@ def port_scan(target: str, ports: str, scan_type: str = "tcp_syn", rate: int = 1
         # Create initial scan record
         database.create_scan_record(scan_id, target, ports, scan_type, start_time)
 
-        # Execute the scan
-        success, error_output, output_file = execute_masscan(target, ports, rate, timeout=60)
+        # Progress tracking
+        discovered_hosts = []
+        total_hosts_found = 0
+        total_ports_found = 0
+
+        def internal_progress_callback(progress_data):
+            nonlocal total_hosts_found, total_ports_found
+
+            if progress_data['type'] == 'host_found':
+                # Process and store the new host data immediately
+                ip = progress_data['ip']
+                port_data = progress_data['ports']
+
+                # Convert to our expected format
+                host_entry = {"ip": ip, "ports": []}
+
+                for port_info in port_data:
+                    port = port_info.get('port')
+                    protocol = port_info.get('proto', 'tcp')
+                    state = port_info.get('status', 'open')
+                    service_info = port_info.get('service', {})
+
+                    if port:
+                        # Get banner info if available
+                        banner_info = {}
+                        if service_info:
+                            service_name = service_info.get('name', 'unknown')
+                            banner_text = service_info.get('banner', '').strip()
+                            banner_info = {
+                                "service": service_name,
+                                "version": "",
+                                "banner": banner_text
+                            }
+                        else:
+                            # Try to get banner with netcat
+                            try:
+                                banner_info = getBanner(ip, port)
+                            except Exception:
+                                banner_info = {"service": "unknown", "version": "", "banner": ""}
+
+                        host_entry["ports"].append({
+                            "port": port,
+                            "protocol": protocol,
+                            "state": state,
+                            "service": banner_info.get("service", "unknown"),
+                            "version": banner_info.get("version", ""),
+                            "banner": banner_info.get("banner", "")
+                        })
+
+                discovered_hosts.append(host_entry)
+                total_hosts_found = progress_data['total_hosts']
+                total_ports_found = progress_data['total_ports']
+
+                # Save incremental results to database
+                try:
+                    database.save_incremental_scan_result(scan_id, host_entry)
+                except Exception as e:
+                    print(f"Warning: Failed to save incremental result: {e}")
+
+                # Call user's progress callback
+                if progress_callback:
+                    progress_callback({
+                        'type': 'host_discovered',
+                        'scan_id': scan_id,
+                        'host': host_entry,
+                        'total_hosts': total_hosts_found,
+                        'total_ports': total_ports_found,
+                        'message': f"Found host {ip} with {len(host_entry['ports'])} open ports"
+                    })
+
+            elif progress_data['type'] == 'scan_complete':
+                if progress_callback:
+                    progress_callback({
+                        'type': 'scan_complete',
+                        'scan_id': scan_id,
+                        'total_hosts': total_hosts_found,
+                        'total_ports': total_ports_found,
+                        'return_code': progress_data['return_code']
+                    })
+
+        # Execute the scan with streaming (use default 5-minute timeout)
+        success, error_output, output_file = execute_masscan_streaming(
+            target, ports, rate, progress_callback=internal_progress_callback
+        )
+
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
 
         if not success:
             # Update scan record with error
-            end_time = datetime.now()
-            duration = (end_time - start_time).total_seconds()
             database.update_scan_status(
-                scan_id, 
-                "failed", 
-                end_time, 
-                duration, 
-                0, 
-                0, 
-                "", 
+                scan_id,
+                "failed",
+                end_time,
+                duration,
+                0,
+                0,
+                "",
                 error_output
             )
 
@@ -335,17 +409,27 @@ def port_scan(target: str, ports: str, scan_type: str = "tcp_syn", rate: int = 1
                 "target": target,
                 "ports": ports
             }
-        end_time = datetime.now()
 
-        # Parse scan results
-        hosts = parse_masscan_results(output_file)
+        # Final processing of any remaining results
+        final_hosts = parse_masscan_results(output_file)
 
-        # Save results to database
+        # Merge with discovered hosts (in case we missed any)
+        all_hosts = discovered_hosts.copy()
+        for host in final_hosts:
+            # Check if we already have this host
+            existing_host = None
+            for existing in all_hosts:
+                if existing["ip"] == host["ip"]:
+                    existing_host = existing
+                    break
+
+            if not existing_host:
+                all_hosts.append(host)
+
+        # Save final results to database
         total_hosts, total_open_ports = database.save_scan_results(
-            scan_id, target, ports, scan_type, start_time, end_time, hosts
+            scan_id, target, ports, scan_type, start_time, end_time, all_hosts
         )
-
-        duration = (end_time - start_time).total_seconds()
 
         return {
             "success": True,
@@ -355,7 +439,7 @@ def port_scan(target: str, ports: str, scan_type: str = "tcp_syn", rate: int = 1
             "scan_type": scan_type,
             "total_hosts": total_hosts,
             "total_open_ports": total_open_ports,
-            "hosts": hosts,
+            "hosts": all_hosts,
             "duration_seconds": duration,
             "message": f"Scan completed - found {total_hosts} hosts with {total_open_ports} open ports"
         }
@@ -366,3 +450,25 @@ def port_scan(target: str, ports: str, scan_type: str = "tcp_syn", rate: int = 1
             "error": str(e),
             "scan_id": scan_id if 'scan_id' in locals() else None
         }
+
+
+def port_scan(target: str, ports, scan_type: str = "tcp_syn", rate: int = 100) -> dict:
+    """
+    NETWORK PORT SCANNING: Discover open ports on hosts using masscan.
+
+    This function performs PORT DISCOVERY to find open TCP/UDP ports on target hosts.
+    This is the legacy synchronous version for backward compatibility.
+
+    Args:
+        target: IP address or CIDR range to scan
+        ports: Comma-separated ports or ranges
+        scan_type: Type of scan (tcp_syn, tcp_connect, udp, etc.)
+        rate: Packets per second rate
+
+    Returns:
+        Dictionary with scan results
+    """
+    return port_scan_streaming(target, scan_type, rate, progress_callback=None)
+
+if __name__ == "__main__":
+    print( port_scan('192.168.0.242', 'tcp_syn', '500', ))

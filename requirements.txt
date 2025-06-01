@@ -4,8 +4,14 @@ mcp>=1.0.0
 # Data validation and parsing
 pydantic>=2.0.0
 
+# Database
+pymongo>=4.0.0
+
 # CLI interface
 click>=8.0.0
+
+# Metasploit integration
+pymetasploit3>=1.0.0
 
 # Development dependencies (optional)
 pytest>=7.0.0
