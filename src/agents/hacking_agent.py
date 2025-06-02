@@ -56,14 +56,12 @@ class HackingAgent:
     async def initialize(self):
         """Initialize the hacking agent with MCP tools."""
         try:
-            # Get the path to the FastMCP server script
-            server_script = Path(__file__).parent.parent / "red_team_mcp" / "fastmcp_server.py"
-            mcp_command = f"python {server_script}"
 
-            # Create MCP tools with longer timeout for hacking operations
-            self.mcp_tools = MCPTools(command=mcp_command, timeout_seconds=self.mcp_timeout)
+            mcp_url = "http://127.0.0.1:5678/mcp/"
+            self.mcp_tools = MCPTools(url=mcp_url, timeout_seconds=self.mcp_timeout, transport='streamable-http')
             await self.mcp_tools.__aenter__()
 
+            print("MCP tools", self.mcp_tools)
 
             model = Ollama(
                 id=self.ollama_model,

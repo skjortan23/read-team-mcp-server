@@ -4,16 +4,20 @@ FastMCP Server - Red Team MCP using FastMCP
 
 This creates a minimal but functional red team MCP server using FastMCP.
 """
-
+import argparse
 import json
 import socket
-import asyncio
-from typing import Annotated, AsyncGenerator, Dict
+import subprocess
+from typing import Annotated, AsyncGenerator, Dict, List
 from pydantic import BaseModel, Field
 from fastmcp import FastMCP
-from red_team_mcp import database, masscan_scanner, ssh_scanner, metasploit_scanner, domain_discovery
+from red_team_mcp import database, ssh_scanner, metasploit_scanner, domain_discovery
 from red_team_mcp.bannerGrabber import getBanner
-from red_team_mcp.nuclei_scanner import enumerate_vulnerabilities
+import asyncio
+from masscan import mass_port_scan
+import logging
+
+from red_team_mcp.vulnerability_scanner import scan_with_nuclei
 
 
 # Pydantic models for better schema control
@@ -57,7 +61,10 @@ class VulerabilityScanParameters(BaseModel):
 
 
 # Create FastMCP server
-app = FastMCP("Red Team MCP")
+app = FastMCP(
+    name="Red Team MCP server",
+    stateless_http=True,
+    )
 
 # Initialize database on startup
 database.init_database()
@@ -78,7 +85,7 @@ async def resolve_hostname_to_ip(
     """Resolve a hostname to an IP address with timeout."""
     try:
         # Run the blocking socket operation in a thread pool with timeout
-        import asyncio
+
         ip_address = await asyncio.wait_for(
             asyncio.to_thread(socket.gethostbyname, hostname),
             timeout=10.0  # 10 second DNS timeout
@@ -101,11 +108,8 @@ async def resolve_hostname_to_ip(
         })
 
 
-
-
-
 @app.tool()
-async def port_scan(params: PortScanParams) -> str:
+async def port_scan(params: PortScanParams) -> List[str]:
     """
     NETWORK PORT SCANNING: Discover open ports on hosts using masscan.
 
@@ -126,9 +130,14 @@ async def port_scan(params: PortScanParams) -> str:
     For vulnerability scanning, use the vulnerability_scan tool instead.
     """
 
-    from masscan import mass_port_scan
-    res = await mass_port_scan(target=params.target, ports=params.ports)
-    return res
+    logging.warning("starting mass scan")
+    try:
+        res = await mass_port_scan(target=params.target, ports=params.ports)
+        logging.warning(res)
+        return res
+    except Exception as e:
+        logging.warning("mass scanning failed:", e)
+
 
 
 @app.tool(
@@ -142,9 +151,9 @@ async def port_scan(params: PortScanParams) -> str:
         ),
         "readOnlyHint": False,
         "openWorldHint": True
-    }
+    },
 )
-async def enumerate_vulnerabilities(host: str, port: int) -> AsyncGenerator[Dict, None]:
+def enumerate_vulnerabilities(host: str, port: int) -> [str]:
     """
     ENUMERATE VULNERABILITIES: Find security issues and CVEs using nuclei scanner with streaming output.
 
@@ -166,9 +175,70 @@ async def enumerate_vulnerabilities(host: str, port: int) -> AsyncGenerator[Dict
     IMPORTANT: This tool ENUMERATES VULNERABILITIES, not open ports.
     For port discovery, use the port_scan tool instead.
     """
-    res = enumerate_vulnerabilities(host, port)
-    return res
 
+    # 1) Build the exact same target URL you use on the CLI
+    if port == 443:
+        target_url = f"https://{host}:{port}"
+    elif port == 80:
+        target_url = f"http://{host}"
+    else:
+        target_url = f"http://{host}:{port}"
+
+    # 2) Build the exact nuclei command that finishes in ~8 s locally
+    cmd = [
+        "nuclei",
+        "-target", target_url,
+        "-timeout", "3",         # 3 s per‐template timeout
+        "-no-color",             # strip ANSI colors
+        "-jsonl",                # JSON Lines output
+        "-silent",               # progress → stderr
+        "-pt", "http",
+        "-severity", "medium,high,critical",
+        "-tags", "http,web,ollama,api",
+    ]
+
+    logging.warning(f"starting vuln scan: command={" ".join(cmd)}")
+
+    # 3) Run it synchronously with a 60 s hard cap
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=90,   # if nuclei never returns in 60 s, bail out
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        # Return an error message as a one‐element list
+        logging.warning("vuln scan timeout")
+        return [f"Nuclei scan timed out after 60 s"]
+
+    # 4) (Optional) Log stderr to FastMCP’s logs for debugging
+    stderr_text = proc.stderr.decode(errors="ignore").strip()
+    if stderr_text:
+        print("⏺ nuclei stderr:", stderr_text)
+
+    # 5) Parse JSON Lines from stdout
+    stdout_text = proc.stdout.decode(errors="ignore")
+    findings = []
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            findings.append(json.dumps(json.loads(line)))
+        except json.JSONDecodeError:
+            # skip any malformed line
+            continue
+
+    # 6) If nuclei returned non‐zero, treat that as a failure
+    if proc.returncode != 0:
+        logging.warning(f"nuclei scan failed: {proc.returncode}")
+        return [f"Nuclei exited with code {proc.returncode}, parsed {len(findings)} entries"]
+
+    # 7) Success: return each JSON‐string as its own list element
+    logging.warning(f"finished nuclei scan with {len(findings)} entries")
+    return findings
 
 @app.tool()
 async def get_banner(
@@ -470,5 +540,36 @@ def list_capabilities() -> str:
     })
 
 if __name__ == "__main__":
-    # Run the FastMCP server
-    app.run()
+
+    parser = argparse.ArgumentParser(description="Red Team MCP Server (TCP mode)")
+    parser.add_argument(
+        "--host", "-H",
+        default="127.0.0.1",
+        help="Host or IP to bind (default: 127.0.0.1)"
+    )
+    parser.add_argument(
+        "--port", "-P",
+        type=int,
+        default=5678,
+        help="TCP port for the MCP server (default: 5678)"
+    )
+    parser.add_argument(
+        "--debug", "-d",
+        action="store_true",
+        help="Enable debug‐level logging"
+    )
+    args = parser.parse_args()
+
+    # Create the FastMCP app just as before
+
+    # (Your @app.tool definitions go here… no changes needed.)
+
+    if args.debug:
+        # Turn on more verbose logging if you like
+        import logging
+
+        logging.basicConfig(level=logging.DEBUG)
+
+    print(f"[MCP Server] Listening on {args.host}:{args.port} (TCP transport)")
+    # This starts the server socket and blocks, printing logs to stdout/stderr.
+    app.run(transport="streamable-http", host=args.host, port=args.port)

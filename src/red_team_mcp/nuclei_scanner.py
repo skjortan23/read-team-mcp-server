@@ -43,100 +43,114 @@ def get_template_config_for_port(port: int) -> dict:
     - tags: List of nuclei tags to include
     - severity: List of severity levels to include
     """
+    # Define common configurations
+    common_severity = ["medium", "high", "critical"]
+    full_severity = ["low", "medium", "high", "critical"]
+
+    # Base configurations for different service types
+    http_base = {
+        "protocol_types": ["http"],
+        "tags": ["http", "web"],
+        "severity": common_severity
+    }
+
+    https_base = {
+        "protocol_types": ["http", "ssl"],
+        "tags": ["http", "web", "ssl"],
+        "severity": common_severity
+    }
+
+    tcp_base = {
+        "protocol_types": ["tcp"],
+        "tags": ["tcp", "network"],
+        "severity": common_severity
+    }
 
     # Port-to-service mapping with nuclei template configuration
     port_configs = {
         # Web Services
         80: {
             "service_name": "HTTP",
-            "protocol_types": ["http"],
-            "tags": ["http", "web", "cms", "panel"],
-            "severity": ["low", "medium", "high", "critical"]
+            **http_base,
+            "tags": http_base["tags"] + ["cms", "panel"],
+            "severity": full_severity
         },
         443: {
             "service_name": "HTTPS",
-            "protocol_types": ["http", "ssl"],
-            "tags": ["http", "web", "cms", "panel", "ssl", "tls"],
-            "severity": ["low", "medium", "high", "critical"]
+            **https_base,
+            "tags": https_base["tags"] + ["cms", "panel", "tls"],
+            "severity": full_severity
         },
         11434: {
             "service_name": "HTTP Alt",
-            "protocol_types": ["http"],
-            "tags": ["http", "web", "ollama", "api"],
-            "severity": ["low", "medium", "high", "critical"]
+            **http_base,
+            "tags": http_base["tags"] + ["ollama", "api"],
+            "severity": full_severity
         },
         8080: {
             "service_name": "HTTP Alt",
-            "protocol_types": ["http"],
-            "tags": ["http", "web", "panel", "tomcat", "jenkins"],
-            "severity": ["low", "medium", "high", "critical"]
+            **http_base,
+            "tags": http_base["tags"] + ["panel", "tomcat", "jenkins"],
         },
         8443: {
             "service_name": "HTTPS Alt",
-            "protocol_types": ["http", "ssl"],
-            "tags": ["http", "web", "panel", "ssl"],
-            "severity": ["low", "medium", "high", "critical"]
+            **https_base,
+            "tags": https_base["tags"] + ["panel"],
         },
         3000: {
             "service_name": "Node.js/React Dev",
-            "protocol_types": ["http"],
-            "tags": ["http", "web", "nodejs", "react"],
-            "severity": ["medium", "high", "critical"]
+            **http_base,
+            "tags": http_base["tags"] + ["nodejs", "react"],
         },
         5000: {
             "service_name": "Flask/Python Dev",
-            "protocol_types": ["http"],
-            "tags": ["http", "web", "python", "flask"],
-            "severity": ["medium", "high", "critical"]
+            **http_base,
+            "tags": http_base["tags"] + ["python", "flask"],
         },
         8000: {
             "service_name": "HTTP Dev",
-            "protocol_types": ["http"],
-            "tags": ["http", "web", "django", "python"],
-            "severity": ["medium", "high", "critical"]
+            **http_base,
+            "tags": http_base["tags"] + ["django", "python"],
         },
         9000: {
             "service_name": "HTTP Management",
-            "protocol_types": ["http"],
-            "tags": ["http", "web", "panel", "management"],
-            "severity": ["medium", "high", "critical"]
+            **http_base,
+            "tags": http_base["tags"] + ["panel", "management"],
         },
 
         # SSH
         22: {
             "service_name": "SSH",
-            "protocol_types": ["tcp"],
-            "tags": ["ssh", "tcp", "network"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["ssh"],
         },
 
         # FTP
         21: {
             "service_name": "FTP",
-            "protocol_types": ["tcp"],
-            "tags": ["ftp", "tcp", "network"],
-            "severity": ["low", "medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["ftp"],
+            "severity": full_severity
         },
 
         # Telnet
         23: {
             "service_name": "Telnet",
-            "protocol_types": ["tcp"],
-            "tags": ["telnet", "tcp", "network"],
-            "severity": ["high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["telnet"],
         },
 
         # SMTP
         25: {
             "service_name": "SMTP",
-            "protocol_types": ["tcp"],
-            "tags": ["smtp", "email", "tcp"],
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["smtp", "email"],
             "severity": ["low", "medium", "high"]
         },
         587: {
             "service_name": "SMTP Submission",
-            "protocol_types": ["tcp"],
-            "tags": ["smtp", "email", "tcp"],
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["smtp", "email"],
             "severity": ["low", "medium", "high"]
         },
 
@@ -151,67 +165,58 @@ def get_template_config_for_port(port: int) -> dict:
         # Database Services
         3306: {
             "service_name": "MySQL",
-            "protocol_types": ["tcp"],
-            "tags": ["mysql", "database", "tcp"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["mysql", "database"],
         },
         5432: {
             "service_name": "PostgreSQL",
-            "protocol_types": ["tcp"],
-            "tags": ["postgresql", "postgres", "database", "tcp"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["postgresql", "postgres", "database"],
         },
         1433: {
             "service_name": "MSSQL",
-            "protocol_types": ["tcp"],
-            "tags": ["mssql", "database", "tcp"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["mssql", "database"],
         },
         27017: {
             "service_name": "MongoDB",
-            "protocol_types": ["tcp"],
-            "tags": ["mongodb", "database", "tcp"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["mongodb", "database"],
         },
         6379: {
             "service_name": "Redis",
-            "protocol_types": ["tcp"],
-            "tags": ["redis", "database", "tcp"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["redis", "database"],
         },
 
         # Remote Access
         3389: {
             "service_name": "RDP",
-            "protocol_types": ["tcp"],
-            "tags": ["rdp", "tcp", "network"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["rdp"],
         },
         5900: {
             "service_name": "VNC",
-            "protocol_types": ["tcp"],
-            "tags": ["vnc", "tcp", "network"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["vnc"],
         },
 
         # Network Services
         161: {
             "service_name": "SNMP",
-            "protocol_types": ["tcp"],
-            "tags": ["snmp", "tcp", "network"],
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["snmp"],
             "severity": ["low", "medium", "high"]
         },
         445: {
             "service_name": "SMB",
-            "protocol_types": ["tcp"],
-            "tags": ["smb", "tcp", "network"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["smb"],
         },
         139: {
             "service_name": "NetBIOS",
-            "protocol_types": ["tcp"],
-            "tags": ["netbios", "smb", "tcp"],
-            "severity": ["medium", "high", 'critical']
+            **tcp_base,
+            "tags": tcp_base["tags"] + ["netbios", "smb"],
         },
     }
 
@@ -225,25 +230,19 @@ def get_template_config_for_port(port: int) -> dict:
         # Likely HTTP services
         return {
             "service_name": f"HTTP (Port {port})",
-            "protocol_types": ["http"],
-            "tags": ["http", "web"],
-            "severity": ["medium", "high", "critical"]
+            **http_base
         }
     elif 443 <= port <= 449 or port in [8443, 9443]:
         # Likely HTTPS services
         return {
             "service_name": f"HTTPS (Port {port})",
-            "protocol_types": ["http", "ssl"],
-            "tags": ["http", "web", "ssl"],
-            "severity": ["medium", "high", "critical"]
+            **https_base
         }
     else:
         # Generic TCP service
         return {
             "service_name": f"TCP Service (Port {port})",
-            "protocol_types": ["tcp"],
-            "tags": ["tcp", "network"],
-            "severity": ["medium", "high", "critical"]
+            **tcp_base
         }
 
 
@@ -1150,31 +1149,6 @@ async def async_enumerate_vulnerabilities(host: str, port: int, timeout: int = 6
 
 
 if __name__ == "__main__":
-    # Test the tools directly
+    # Test the tools directlyx
     #print(enumerate_vulnerabilities("10.0.0.224", 21))
     print(enumerate_vulnerabilities("192.168.0.242", 11434))
-
-    # Test the async version
-    async def _async_enumerate_vulnerabilities():
-        print("Testing async_enumerate_vulnerabilities...")
-        test_host = "192.168.0.242"
-        test_port = 80
-
-        print(f"Running async vulnerability scan on {test_host}:{test_port}")
-        async for result in async_enumerate_vulnerabilities(test_host, test_port):
-            print(f"Result: {result}")
-
-        # Test with HTTPS port
-        https_test_port = 443
-        print(f"\nTesting HTTPS vulnerability scan on {test_host}:{https_test_port}")
-        async for result in async_enumerate_vulnerabilities(test_host, https_test_port):
-            print(f"Result: {result}")
-
-        # Test with problematic port
-        problem_port = 11434
-        print(f"\nTesting problematic port scan on {test_host}:{problem_port}")
-        async for result in async_enumerate_vulnerabilities(test_host, problem_port, timeout=15):
-            print(f"Result: {result}")
-
-    # Run the async test
-    asyncio.run(_async_enumerate_vulnerabilities())

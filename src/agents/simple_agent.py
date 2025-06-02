@@ -8,7 +8,6 @@ A working agent that uses the FastMCP server with proper MCP compatibility.
 import asyncio
 import re
 from datetime import datetime
-from pathlib import Path
 from textwrap import dedent
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
@@ -17,16 +16,12 @@ import threading
 import queue
 import readline
 import os
-
 import click
 from rich.console import Console
 from rich.table import Table
-from rich.live import Live
-
 from agno.agent import Agent
 from agno.models.ollama import Ollama
 from agno.tools.mcp import MCPTools
-from agno.tools.reasoning import ReasoningTools
 from agno.storage.agent.sqlite import SqliteAgentStorage
 
 # Import the hacking agent tool
@@ -60,8 +55,6 @@ class AgentTask:
     result: Optional[str] = None
     error: Optional[str] = None
     asyncio_task: Optional[asyncio.Task] = None
-
-
 
 class SimpleRedTeamAgent:
     """Simple Red Team Agent with MCP integration and parallel task execution."""
@@ -149,7 +142,6 @@ class SimpleRedTeamAgent:
             self.console.print(f"🤖 {task.task_id}: {task.query}", style="yellow")
 
             # Add timeout to prevent tasks from hanging indefinitely
-            import asyncio
 
             # Use arun with streaming to show tool calls in real-time
             response_content = ""
@@ -417,16 +409,22 @@ class SimpleRedTeamAgent:
         self.console.print(banner, style="bold cyan")
 
     async def initialize(self):
-        """Initialize the agent with MCP tools."""
-        try:
-            self.console.print("🔌 Initializing MCP connection...", style="yellow")
-            # Get the path to the FastMCP server script
-            server_script = Path(__file__).parent.parent / "red_team_mcp" / "fastmcp_server.py"
-            mcp_command = f"python {server_script}"
 
-            # Create MCP tools with configurable timeout for port scans (but don't use as context manager to avoid cleanup issues)
-            self.mcp_tools = MCPTools(command=mcp_command, timeout_seconds=self.mcp_timeout)
+        """Initialize the agent with MCP tools (TCP mode)."""
+        try:
+            self.console.print("🔌 Initializing MCP connection", style="yellow")
+
+            # Instead of spawning via stdio, connect to the TCP server we started:
+            #   — host: 127.0.0.1
+            #   — port: 5678
+            mcp_url = "http://127.0.0.1:5678/mcp/"
+            self.mcp_tools = MCPTools(url=mcp_url, timeout_seconds=self.mcp_timeout, transport='streamable-http')
             await self.mcp_tools.__aenter__()
+
+            print("MCP tools", self.mcp_tools)
+
+            # … rest of your Ollama & Agent setup …
+            self.console.print("✅ Agent initialized successfully!", style="green")
 
             model = Ollama(
                 id=self.ollama_model,
@@ -448,16 +446,16 @@ class SimpleRedTeamAgent:
                 instructions=dedent("""\
                     /no_think
                     You are a expert Red Team Security professional with access to network scanning, reconnaissance, and systematic hacking tools.
-
+    
                     Guidelines:
                     - Use the tools default parameters unless you have a specific reason to change them
                     - Use tables and structured output for scan results
                     - Be thorough in your analysis but concise in your responses
-
+    
                     SPECIALIZED CAPABILITIES:
                     - hack_machine: Execute systematic penetration testing to gain shell access to target machines
                     - This tool follows a complete methodology: reconnaissance → vulnerability assessment → exploitation → post-exploitation
-
+    
                     Available MCP tools will be automatically discovered from the red team server.
                 """),
                 storage=SqliteAgentStorage(
@@ -522,21 +520,6 @@ class SimpleRedTeamAgent:
                         continue
                     elif user_input.lower() == 'tasks':
                         self.display_tasks_table()
-                        continue
-                    elif user_input.lower().startswith('task '):
-                        # Handle task-specific commands
-                        parts = user_input.split(' ', 2)
-                        if len(parts) >= 2:
-                            task_id = parts[1]
-                            if len(parts) == 2:
-                                # Show task details
-                                self.display_task_result(task_id)
-                            elif parts[2] == 'cancel':
-                                # Cancel task
-                                if self.cancel_task(task_id):
-                                    self.console.print(f"🛑 Task {task_id} cancelled", style="yellow")
-                                else:
-                                    self.console.print(f"❌ Could not cancel task {task_id}", style="red")
                         continue
                     else:
                         # For all other input, start a background task
@@ -615,7 +598,7 @@ choose the appropriate tools to accomplish your red team objectives.
                     except asyncio.CancelledError:
                         pass
                     except Exception as e:
-                        self.console.print(f"⚠️  Task cleanup warning: {e}", style="yellow")
+                        self.console.print(f"⚠️ Task cleanup warning: {e}", style="yellow")
 
         # Save command history
         try:
@@ -630,7 +613,7 @@ choose the appropriate tools to accomplish your red team objectives.
                 # Just let it clean up naturally
                 pass
             except Exception as e:
-                self.console.print(f"⚠️  MCP cleanup warning: {e}", style="yellow")
+                self.console.print(f"⚠️ MCP cleanup warning: {e}", style="yellow")
 
 
 # CLI Entry Point
@@ -651,7 +634,7 @@ def main(model: str, host: str, timeout: int, debug: bool):
     try:
         asyncio.run(agent.run_interactive())
     except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
+        print("\nGoodbye!")
     except Exception as e:
         print(f"❌ Agent error: {e}")
         if debug:
