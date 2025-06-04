@@ -16,7 +16,6 @@ from red_team_mcp.bannerGrabber import getBanner
 import asyncio
 from masscan import mass_port_scan
 import logging
-
 from red_team_mcp.vulnerability_scanner import scan_with_nuclei
 
 
@@ -56,9 +55,6 @@ class VulerabilityScanParameters(BaseModel):
         ge=1,
         le=65535
     )
-
-
-
 
 # Create FastMCP server
 app = FastMCP(
@@ -107,6 +103,8 @@ async def resolve_hostname_to_ip(
             "message": f"Failed to resolve hostname: {str(e)}"
         })
 
+def mass_port_scan_sync(target, ports, rate=1000):
+    return asyncio.run(mass_port_scan(target, ports, rate))
 
 @app.tool()
 async def port_scan(params: PortScanParams) -> List[str]:
@@ -130,15 +128,15 @@ async def port_scan(params: PortScanParams) -> List[str]:
     For vulnerability scanning, use the vulnerability_scan tool instead.
     """
 
+
     logging.warning("starting mass scan")
     try:
-        res = await mass_port_scan(target=params.target, ports=params.ports)
+        res = await asyncio.to_thread(mass_port_scan_sync, target=params.target, ports=params.ports)
         logging.warning(res)
         return res
     except Exception as e:
-        logging.warning("mass scanning failed:", e)
-
-
+        logging.warning(f"mass scanning failed: {e}")
+        return []
 
 @app.tool(
     annotations={
@@ -153,7 +151,7 @@ async def port_scan(params: PortScanParams) -> List[str]:
         "openWorldHint": True
     },
 )
-def enumerate_vulnerabilities(host: str, port: int) -> [str]:
+async def enumerate_vulnerabilities(host: str, port: int) -> []:
     """
     ENUMERATE VULNERABILITIES: Find security issues and CVEs using nuclei scanner with streaming output.
 
@@ -176,69 +174,14 @@ def enumerate_vulnerabilities(host: str, port: int) -> [str]:
     For port discovery, use the port_scan tool instead.
     """
 
-    # 1) Build the exact same target URL you use on the CLI
-    if port == 443:
-        target_url = f"https://{host}:{port}"
-    elif port == 80:
-        target_url = f"http://{host}"
+    def scan_with_nuclei_sync(host: str, port: int):
+        return asyncio.run(scan_with_nuclei(host, port))
+
+    findings = await asyncio.to_thread(scan_with_nuclei_sync, host, port)
+    if not len(findings):
+        return {"result":"No vulnerabilities found"}
     else:
-        target_url = f"http://{host}:{port}"
-
-    # 2) Build the exact nuclei command that finishes in ~8 s locally
-    cmd = [
-        "nuclei",
-        "-target", target_url,
-        "-timeout", "3",         # 3 s per‐template timeout
-        "-no-color",             # strip ANSI colors
-        "-jsonl",                # JSON Lines output
-        "-silent",               # progress → stderr
-        "-pt", "http",
-        "-severity", "medium,high,critical",
-        "-tags", "http,web,ollama,api",
-    ]
-
-    logging.warning(f"starting vuln scan: command={" ".join(cmd)}")
-
-    # 3) Run it synchronously with a 60 s hard cap
-    try:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=90,   # if nuclei never returns in 60 s, bail out
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        # Return an error message as a one‐element list
-        logging.warning("vuln scan timeout")
-        return [f"Nuclei scan timed out after 60 s"]
-
-    # 4) (Optional) Log stderr to FastMCP’s logs for debugging
-    stderr_text = proc.stderr.decode(errors="ignore").strip()
-    if stderr_text:
-        print("⏺ nuclei stderr:", stderr_text)
-
-    # 5) Parse JSON Lines from stdout
-    stdout_text = proc.stdout.decode(errors="ignore")
-    findings = []
-    for line in stdout_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        try:
-            findings.append(json.dumps(json.loads(line)))
-        except json.JSONDecodeError:
-            # skip any malformed line
-            continue
-
-    # 6) If nuclei returned non‐zero, treat that as a failure
-    if proc.returncode != 0:
-        logging.warning(f"nuclei scan failed: {proc.returncode}")
-        return [f"Nuclei exited with code {proc.returncode}, parsed {len(findings)} entries"]
-
-    # 7) Success: return each JSON‐string as its own list element
-    logging.warning(f"finished nuclei scan with {len(findings)} entries")
-    return findings
+        return findings
 
 @app.tool()
 async def get_banner(
@@ -518,8 +461,7 @@ def list_capabilities() -> str:
         },
 
         "metasploit": {
-            "search_exploits_fast": "Search cached exploits database for fast results with CVE, platform, rank, and author filtering",
-            "list_exploits": "List available Metasploit exploits with optional filtering by platform and search terms",
+            "search_exploits": "Search cached exploits database for fast results with CVE, platform, rank, and author filtering",
             "execute_exploit": "Execute a Metasploit exploit against a target host with payload and option configuration"
         },
 

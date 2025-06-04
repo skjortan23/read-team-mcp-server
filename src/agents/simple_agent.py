@@ -17,6 +17,7 @@ import queue
 import readline
 import os
 import click
+from agno.tools.reasoning import ReasoningTools
 from rich.console import Console
 from rich.table import Table
 from agno.agent import Agent
@@ -149,7 +150,10 @@ class SimpleRedTeamAgent:
 
             # Use arun with stream=True to get streaming responses
             # Note: We can't use asyncio.wait_for with async generators, so we'll handle timeout differently
-            response_iterator = await self.agent.arun(task.query, stream=True)
+            response_iterator = await self.agent.arun(
+                task.query,
+                stream=True,
+                stream_intermediate_steps=True)
 
             # Track start time for manual timeout handling
             start_time = datetime.now()
@@ -244,8 +248,6 @@ class SimpleRedTeamAgent:
         self.tasks[task_id] = task
 
         # Print confirmation that task was started
-        self.console.print(f"🚀 Started {task_id}: {query}", style="green")
-
         return task_id
 
     def _setup_readline(self):
@@ -439,7 +441,7 @@ class SimpleRedTeamAgent:
                 name="Red Team Agent",
                 model=model,
                 tools=[
-                    #ReasoningTools(add_instructions=True),
+                    ReasoningTools(add_instructions=True),
                     self.mcp_tools,
                     hack_machine  # Add the hacking tool function
                 ],
@@ -451,6 +453,7 @@ class SimpleRedTeamAgent:
                     - Use the tools default parameters unless you have a specific reason to change them
                     - Use tables and structured output for scan results
                     - Be thorough in your analysis but concise in your responses
+                    - If a tool responds with an empty list that means that no findings. Do not run the tool again. 
     
                     SPECIALIZED CAPABILITIES:
                     - hack_machine: Execute systematic penetration testing to gain shell access to target machines
@@ -630,6 +633,7 @@ def main(model: str, host: str, timeout: int, debug: bool):
 
     # Create and run the agent
     agent = SimpleRedTeamAgent(ollama_model=model, ollama_host=host, mcp_timeout=timeout)
+    os.environ["OLLAMA_HOST"] = host
 
     try:
         asyncio.run(agent.run_interactive())
