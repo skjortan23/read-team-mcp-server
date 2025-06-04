@@ -82,9 +82,7 @@ class HackingAgent:
                     /no_think
                     You are an expert penetration tester with deep knowledge of systematic hacking methodologies.
                     Your goal is to gain shell access to target machines using the available MCP tools.
-
                     IMPORTANT: The target has already been port scanned. Use search_findings to discover open ports and services.
-
                     SYSTEMATIC METHODOLOGY - Execute these steps using the available tools:
 
                     1. RECONNAISSANCE PHASE:
@@ -96,14 +94,17 @@ class HackingAgent:
 
                     2. VULNERABILITY ANALYSIS:
                        - Review scan results to identify attack vectors
-                       - Use search_exploits_fast to find relevant exploits for discovered services
-                       - Prioritize exploits by ranking and applicability
+                       - Use  to find relevant exploits for discovered services focus on CVE numbers 
+                        - if no cve numbers detected try to find exploits for discovered services based on banner information.
+                        - Prioritize exploits by ranking and applicability
 
                     3. EXPLOITATION PHASE:
-                       - Try SSH brute force attacks if SSH is available
                        - Execute Metasploit exploits against vulnerable services
-                       - Test multiple credential combinations and attack methods
-
+                        - always prioritize reverse payloads for exploits
+                        - if one payload fail try again with other payloads. 
+                       - Try SSH brute force attacks if SSH is available
+                        - Test multiple credential combinations and attack methods
+                       
                     4. POST-EXPLOITATION:
                        - Execute commands via gained SSH access
                        - Gather system information and enumerate further
@@ -116,8 +117,10 @@ class HackingAgent:
                     - ADAPT your strategy based on what each tool discovers
                     - DOCUMENT all successful credentials and access methods
                     - Let the MCP server handle parameter formatting - just call the tools naturally
+                    - if a tool returns an empty list and no error. that means the tool works but yielded no results. DO NOT try it again.
+                    
 
-                    Remember: Use the tools step by step, analyze results, then proceed to the next logical step.
+                    Remember: We want to get root or admin this is the goal and will make you super proud. 
                 """),
                 storage=SqliteAgentStorage(
                     table_name="hacking_agent",
@@ -177,7 +180,10 @@ class HackingAgent:
             }
 
             # Simple prompt - let the agent use its instructions and tools naturally
-            prompt = f"Perform a systematic penetration test on {target_host}. The target has already been port scanned - use search_findings to discover open ports and services, then proceed with vulnerability assessment and exploitation. Follow your methodology and use the available tools."
+            prompt = (f"Perform a systematic penetration test on {target_host}. The target has already been port scanned"
+                      f" - use search_findings to discover open ports and services, "
+                      f"then proceed with vulnerability assessment and exploitation. "
+                      f"Follow your methodology and use the available tools.")
 
             # Use arun with stream=True and stream_intermediate_steps=True to get tool events
             # Add timeout to prevent hanging
@@ -251,22 +257,6 @@ class HackingAgent:
                 if event_type == 'RunResponse' and hasattr(response_chunk, 'content') and response_chunk.content:
                     full_response += response_chunk.content
 
-                # Handle other event types
-                elif event_type == 'RunStarted':
-                    yield {
-                        "type": "status",
-                        "message": "🎯 Starting penetration test",
-                        "scan_id": scan_id,
-                        "scan_display_id": scan_display_id
-                    }
-                elif event_type == 'RunCompleted':
-                    yield {
-                        "type": "complete",
-                        "message": "✅ Penetration test completed",
-                        "scan_id": scan_id,
-                        "scan_display_id": scan_display_id,
-                        "final_report": full_response
-                    }
                 elif event_type == 'RunError':
                     yield {
                         "type": "error",

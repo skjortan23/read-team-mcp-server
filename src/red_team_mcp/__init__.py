@@ -7,6 +7,7 @@ __version__ = "0.1.1"
 __author__ = "Red Team MCP"
 __email__ = "skjortan@gmail.com"
 
-from .server import RedTeamMCPServer
+from .fastmcp_server import domain_discovery
 
-__all__ = ["RedTeamMCPServer"]
+__all__ = [""]
+
