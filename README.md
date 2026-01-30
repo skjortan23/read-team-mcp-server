@@ -1,6 +1,8 @@
 # Red-team-mcp
 An MCP (Model Context Protocol) server for AI agents to use during red teaming exercises.
 
+This is a demo project and is not actively maintained.
+
 ## Overview
 This server provides resources and tools for AI agents to access during red teaming scenarios. It implements the Model Context Protocol to allow AI agents to retrieve information, access tools, and perform actions needed for security testing and evaluation.
 
