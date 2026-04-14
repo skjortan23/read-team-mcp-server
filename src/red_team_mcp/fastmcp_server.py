@@ -11,7 +11,7 @@ import subprocess
 from typing import Annotated, AsyncGenerator, Dict, List
 from pydantic import BaseModel, Field
 from fastmcp import FastMCP
-from red_team_mcp import database, ssh_scanner, metasploit_scanner, domain_discovery
+from red_team_mcp import database, ssh_scanner, metasploit_scanner, domain_discovery, recon_tools
 from red_team_mcp.bannerGrabber import getBanner
 import asyncio
 from masscan import mass_port_scan
@@ -73,6 +73,9 @@ metasploit_scanner.register_tools(app)
 
 # Register Domain Discovery tools
 domain_discovery.register_tools(app)
+
+# Register recon helper tools (WHOIS, traceroute, Shodan)
+recon_tools.register_tools(app)
 
 @app.tool()
 async def resolve_hostname_to_ip(
